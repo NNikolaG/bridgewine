@@ -7,6 +7,11 @@ description: Pravila za Wine + Apple Game Porting Toolkit (D3DMetal), DXMT i Ros
 
 Kratko. Komande i putanje doslovno. Sve sto nije potvrdjeno na M5 = "proveriti", upisi u `docs/notes/<igra>.md`.
 
+## Cilj projekta
+- BridgeWine = besplatna zamena za CrossOver (i Whisky). Sve radimo sami: Wine + GPTK + Rosetta.
+- Nikad ne trazi od korisnika da instalira ili proba CrossOver, Whisky, Heroic ili sl. kao korak. Ne ni "za poredjenje".
+- Ako fali korak: napisi ga u `bw` ili u beleske, ne salji korisnika na tudji alat.
+
 ## Pravni okvir (uvek)
 - Ne commitovati: fajlove igara, GPTK/D3DMetal binarne fajlove, Steam, krekove.
 - GPTK korisnik skida sam (Apple Developer). Mi samo trazimo putanju.
@@ -68,7 +73,7 @@ Kratko. Komande i putanje doslovno. Sve sto nije potvrdjeno na M5 = "proveriti",
 3. Promeni engine (gptk -> dxmt -> wined3d). Problem nestane = prevodilac.
 4. `WINEMSYNC=0`. Nestane = sync.
 5. Novi cist bottle. Nestane = pokvaren prefiks.
-6. Trazi poznat bag: Wine bugzilla, GPTK/DXMT issues, AppleGamingWiki, CrossOver compat. Link u belesku.
+6. Trazi poznat bag: Wine bugzilla, GPTK/DXMT issues, AppleGamingWiki. Link u belesku.
 7. Sve sto si probao + ishod u `docs/notes/<igra>.md` sekciju Problemi. Ne brisi neuspele pokusaje.
 
 ## Gde se radi
