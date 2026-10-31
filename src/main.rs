@@ -1,5 +1,6 @@
 //! BridgeWine CLI (`bw`).
 
+mod bottle;
 mod doctor;
 mod recipe;
 
@@ -32,10 +33,43 @@ enum Command {
         #[command(subcommand)]
         action: RecipeAction,
     },
-    /// Napravi Wine prefiks za igru (faza 1, u izradi)
-    Bottle { game: String },
-    /// Pokreni igru po receptu (faza 1, u izradi)
-    Run { game: String },
+    /// Wine prefiks (bottle) za igru
+    Bottle {
+        #[command(subcommand)]
+        action: BottleAction,
+    },
+    /// Windows Steam u bottle-u igre
+    Steam {
+        #[command(subcommand)]
+        action: SteamAction,
+    },
+    /// Pokreni igru po receptu
+    Run {
+        game: String,
+        /// Samo ispisi komandu, ne pokreci
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum BottleAction {
+    /// Napravi prefiks i postavi verziju Windowsa iz recepta
+    Create {
+        game: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SteamAction {
+    /// Skini i tiho instaliraj Windows Steam
+    Install {
+        game: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -59,9 +93,29 @@ fn main() -> ExitCode {
             RecipeAction::Show { id } => recipe::cmd_show(&dir, &id),
             RecipeAction::Check => recipe::cmd_check(&dir),
         },
-        Command::Bottle { game } | Command::Run { game } => {
-            eprintln!("bw: '{game}': jos nije implementirano, sledeci korak u fazi 1");
-            ExitCode::from(2)
+        Command::Bottle {
+            action: BottleAction::Create { game, dry_run },
+        } => with_recipe(&dir, &game, |r| bottle::cmd_create(r, dry_run)),
+        Command::Steam {
+            action: SteamAction::Install { game, dry_run },
+        } => with_recipe(&dir, &game, |r| bottle::cmd_steam_install(r, dry_run)),
+        Command::Run { game, dry_run } => with_recipe(&dir, &game, |r| bottle::cmd_run(r, dry_run)),
+    }
+}
+
+fn with_recipe(
+    dir: &std::path::Path,
+    id: &str,
+    f: impl FnOnce(&recipe::Recipe) -> ExitCode,
+) -> ExitCode {
+    match recipe::load_file(&dir.join(format!("{id}.toml"))) {
+        Ok(r) => f(&r),
+        Err(errs) => {
+            eprintln!("bw: recept '{id}' nije ucitan:");
+            for e in errs {
+                eprintln!("  {e}");
+            }
+            ExitCode::FAILURE
         }
     }
 }

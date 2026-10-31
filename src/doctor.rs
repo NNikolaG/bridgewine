@@ -34,7 +34,7 @@ pub struct Probe {
     pub d3dmetal: Option<String>,
 }
 
-const GPTK_WINE_PATHS: &[&str] = &[
+pub const GPTK_WINE_PATHS: &[&str] = &[
     "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64",
     "/usr/local/opt/game-porting-toolkit/bin/wine64",
     "/usr/local/bin/wine64",
@@ -67,6 +67,14 @@ fn first_existing(paths: &[&str]) -> Option<String> {
         .iter()
         .find(|p| Path::new(p).exists())
         .map(|p| p.to_string())
+}
+
+/// Wine koji BridgeWine koristi: $BW_WINE ako postoji, inace prvi GPTK wine64.
+pub fn find_wine() -> Option<String> {
+    std::env::var("BW_WINE")
+        .ok()
+        .filter(|p| Path::new(p).exists())
+        .or_else(|| first_existing(GPTK_WINE_PATHS))
 }
 
 pub fn probe() -> Probe {
