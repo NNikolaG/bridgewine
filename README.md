@@ -18,11 +18,14 @@ jednom komandom. Prva ciljna igra je **Age of Empires III** sa Steama na M5 MacB
 Ne distribuira fajlove igara, Appleove GPTK binarne fajlove, krekove niti zaobilazi DRM.
 Igru kupujes i instaliras preko svog Steam naloga, a GPTK skidas sam sa Apple Developer sajta.
 
-## Build
+## Build i prve komande
 
 ```sh
 cargo build --release
-./target/release/bw --help
+./target/release/bw doctor              # sta fali na Macu
+./target/release/bw recipe list         # sve igre
+./target/release/bw recipe show aoe3-de # recept za AoE3 DE
+./target/release/bw recipe check        # validacija (radi i CI)
 ```
 
 ## Roadmap

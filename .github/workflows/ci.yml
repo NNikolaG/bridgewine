@@ -1,5 +1,4 @@
 name: CI
-
 on:
   push:
     branches: [main]
@@ -12,43 +11,42 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
-  rust:
-    name: Rust (macOS arm64)
-    runs-on: macos-latest
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Arhitektura runnera
-        run: uname -m && rustc -vV
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: cargo test
-        run: cargo test --locked
-      - name: cargo build --release
-        run: cargo build --release --locked
-      - name: Smoke test bw
-        run: ./target/release/bw --version
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - name: Validacija recepata
+        run: cargo run -q --locked -- recipe check
+      - if: runner.os == 'macOS'
+        run: cargo run -q --locked -- doctor || true
+
+  build-macos-arm64:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Proveri da je runner arm64
+        run: test "$(uname -m)" = arm64
+      - run: cargo build --release --locked
+      - name: Smoke test
+        run: ./target/release/bw --version && ./target/release/bw recipe list
       - uses: actions/upload-artifact@v4
         with:
           name: bw-macos-arm64
           path: target/release/bw
           if-no-files-found: error
-
-  recipes:
-    name: Recepti (TOML)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Validacija recepata
-        run: python .github/scripts/validate_recipes.py recipes
