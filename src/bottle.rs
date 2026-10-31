@@ -86,16 +86,49 @@ fn base_env(prefix: &Path) -> BTreeMap<String, String> {
     env
 }
 
-/// `wineboot --init` pravi prefiks, `winecfg -v` postavlja verziju Windowsa,
-/// a `wineserver -w` ceka da Wine zavrsi i upise registry na disk.
-pub fn create_invocations(wine: &str, prefix: &Path, recipe: &Recipe) -> Vec<Invocation> {
-    let env = base_env(prefix);
+fn wineserver(wine: &str, prefix: &Path, flag: &str) -> Invocation {
+    Invocation {
+        program: wineserver_for(wine),
+        args: vec![flag.into()],
+        env: base_env(prefix),
+    }
+}
+
+/// Puna inicijalizacija prefiksa: `wineboot -u` registruje builtin DLL-ove
+/// (kripto provajdere, nsiproxy...), a `wineserver -w` ceka da se sve upise.
+/// Bez toga Steam pada sa "http error 0" jer HTTPS ne radi.
+pub fn init_invocations(wine: &str, prefix: &Path) -> Vec<Invocation> {
     vec![
         Invocation {
             program: wine.into(),
-            args: vec!["wineboot".into(), "--init".into()],
-            env: env.clone(),
+            args: vec!["wineboot".into(), "-u".into()],
+            env: base_env(prefix),
         },
+        wineserver(wine, prefix, "-w"),
+    ]
+}
+
+/// Ugasi sve Wine procese bottle-a, pa ga ponovo inicijalizuj.
+pub fn repair_invocations(wine: &str, prefix: &Path) -> Vec<Invocation> {
+    let mut v = vec![wineserver(wine, prefix, "-k")];
+    v.extend(init_invocations(wine, prefix));
+    v
+}
+
+/// Zdrav prefiks ima hiljade kljuceva u system.reg; polu-inicijalizovan ima desetine.
+pub const MIN_REG_KEYS: usize = 1000;
+
+pub fn registry_keys(prefix: &Path) -> usize {
+    fs::read_to_string(prefix.join("system.reg"))
+        .map(|t| t.lines().filter(|l| l.starts_with('[')).count())
+        .unwrap_or(0)
+}
+
+/// Inicijalizacija, pa `winecfg -v` za verziju Windowsa iz recepta.
+pub fn create_invocations(wine: &str, prefix: &Path, recipe: &Recipe) -> Vec<Invocation> {
+    let env = base_env(prefix);
+    let mut v = init_invocations(wine, prefix);
+    v.extend([
         Invocation {
             program: wine.into(),
             args: vec![
@@ -103,14 +136,11 @@ pub fn create_invocations(wine: &str, prefix: &Path, recipe: &Recipe) -> Vec<Inv
                 "-v".into(),
                 recipe.runtime.windows_version.clone(),
             ],
-            env: env.clone(),
-        },
-        Invocation {
-            program: wineserver_for(wine),
-            args: vec!["-w".into()],
             env,
         },
-    ]
+        wineserver(wine, prefix, "-w"),
+    ]);
+    v
 }
 
 pub fn steam_install_invocation(wine: &str, prefix: &Path, setup: &Path) -> Invocation {
@@ -205,6 +235,13 @@ pub fn cmd_steam_install(recipe: &Recipe, dry_run: bool) -> ExitCode {
                 recipe.game.id
             ));
         }
+        if !dry_run && registry_keys(&prefix) < MIN_REG_KEYS {
+            println!(
+                "bottle nije potpuno inicijalizovan ({} kljuceva u registry-ju), popravljam...",
+                registry_keys(&prefix)
+            );
+            run_all(&repair_invocations(&wine, &prefix), false)?;
+        }
         let cache = home().join("cache");
         let setup = cache.join("SteamSetup.exe");
         if !setup.exists() {
@@ -257,6 +294,32 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
     })())
 }
 
+pub fn cmd_repair(recipe: &Recipe, dry_run: bool) -> ExitCode {
+    finish((|| {
+        let wine = wine_or_err()?;
+        let prefix = bottle_path(&home(), &recipe.game.id);
+        if !dry_run && !bottle_exists(&prefix) {
+            return Err(format!(
+                "bottle ne postoji, prvo `bw bottle create {}`",
+                recipe.game.id
+            ));
+        }
+        run_all(&repair_invocations(&wine, &prefix), dry_run)?;
+        if !dry_run {
+            println!("registry: {} kljuceva", registry_keys(&prefix));
+        }
+        Ok(())
+    })())
+}
+
+pub fn cmd_kill(recipe: &Recipe, dry_run: bool) -> ExitCode {
+    finish((|| {
+        let wine = wine_or_err()?;
+        let prefix = bottle_path(&home(), &recipe.game.id);
+        run_all(&[wineserver(&wine, &prefix, "-k")], dry_run)
+    })())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +369,27 @@ dxgi = "native,builtin"
     }
 
     #[test]
+    fn repair_kills_then_reinits() {
+        let inv = repair_invocations("/w/wine64", Path::new("/p"));
+        let args: Vec<_> = inv.iter().map(|i| i.args.join(" ")).collect();
+        assert_eq!(args, ["-k", "wineboot -u", "-w"]);
+    }
+
+    #[test]
+    fn counts_registry_keys() {
+        let dir = std::env::temp_dir().join(format!("bw-reg-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(registry_keys(&dir), 0);
+        fs::write(
+            dir.join("system.reg"),
+            "WINE REGISTRY Version 2\n[A]\n\"x\"=1\n[B]\n",
+        )
+        .unwrap();
+        assert_eq!(registry_keys(&dir), 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn bottle_lives_under_home() {
         assert_eq!(
             bottle_path(Path::new("/h"), "aoe3-de"),
@@ -316,10 +400,11 @@ dxgi = "native,builtin"
     #[test]
     fn create_inits_prefix_then_sets_windows_version() {
         let inv = create_invocations("/w/wine64", Path::new("/p"), &recipe());
-        assert_eq!(inv[0].args, ["wineboot", "--init"]);
-        assert_eq!(inv[1].args, ["winecfg", "-v", "win10"]);
-        assert_eq!(inv[2].program, "/w/wineserver");
-        assert_eq!(inv[2].args, ["-w"]);
+        assert_eq!(inv[0].args, ["wineboot", "-u"]);
+        assert_eq!(inv[1].program, "/w/wineserver");
+        assert_eq!(inv[1].args, ["-w"]);
+        assert_eq!(inv[2].args, ["winecfg", "-v", "win10"]);
+        assert_eq!(inv[3].args, ["-w"]);
         assert_eq!(inv[0].env["WINEPREFIX"], "/p");
     }
 

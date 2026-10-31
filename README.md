@@ -36,6 +36,10 @@ bw steam install aoe3-de   # skida i tiho instalira Windows Steam
 bw run aoe3-de             # pokrece igru kroz Steam (-applaunch 933110)
 ```
 
+Ako Steam javi "Steam needs to be online" ili "http error 0", bottle nije
+potpuno inicijalizovan: `bw bottle repair aoe3-de`. Sve Wine procese gasi
+`bw bottle kill aoe3-de`.
+
 Svaka komanda prima `--dry-run` da samo ispise sta bi pokrenula. `BW_HOME`
 menja gde zive bottle-i, a `BW_WINE` koji Wine se koristi.
 

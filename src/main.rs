@@ -60,6 +60,18 @@ enum BottleAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Ponovo inicijalizuj prefiks (npr. kad Steam javi "http error 0")
+    Repair {
+        game: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Ugasi sve Wine procese ovog bottle-a
+    Kill {
+        game: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -96,6 +108,12 @@ fn main() -> ExitCode {
         Command::Bottle {
             action: BottleAction::Create { game, dry_run },
         } => with_recipe(&dir, &game, |r| bottle::cmd_create(r, dry_run)),
+        Command::Bottle {
+            action: BottleAction::Repair { game, dry_run },
+        } => with_recipe(&dir, &game, |r| bottle::cmd_repair(r, dry_run)),
+        Command::Bottle {
+            action: BottleAction::Kill { game, dry_run },
+        } => with_recipe(&dir, &game, |r| bottle::cmd_kill(r, dry_run)),
         Command::Steam {
             action: SteamAction::Install { game, dry_run },
         } => with_recipe(&dir, &game, |r| bottle::cmd_steam_install(r, dry_run)),
