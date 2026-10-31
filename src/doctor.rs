@@ -27,6 +27,8 @@ pub struct Probe {
     pub rosetta: bool,
     pub xcode_clt: bool,
     pub brew_arm: bool,
+    /// /opt/homebrew postoji ali trenutni korisnik ne sme da pise u njega.
+    pub brew_not_writable: bool,
     pub brew_x86: bool,
     pub gptk_wine: Option<String>,
     pub d3dmetal: Option<String>,
@@ -80,6 +82,8 @@ pub fn probe() -> Probe {
         rosetta: mac && cmd_ok("arch", &["-x86_64", "/usr/bin/true"]),
         xcode_clt: mac && cmd_ok("xcode-select", &["-p"]),
         brew_arm: Path::new("/opt/homebrew/bin/brew").exists(),
+        brew_not_writable: Path::new("/opt/homebrew").exists()
+            && !cmd_ok("test", &["-w", "/opt/homebrew"]),
         brew_x86: mac && Path::new("/usr/local/bin/brew").exists(),
         gptk_wine: std::env::var("BW_WINE")
             .ok()
@@ -166,6 +170,14 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         },
         fix: (!p.brew_arm && !p.brew_x86).then_some("https://brew.sh"),
     });
+    if p.brew_not_writable {
+        v.push(Check {
+            name: "Homebrew prava",
+            status: Fail,
+            detail: "/opt/homebrew nije upisiv za tvog korisnika".into(),
+            fix: Some("sudo chown -R $(whoami) /opt/homebrew  (nikad `sudo brew`)"),
+        });
+    }
 
     v.push(Check {
         name: "Wine (GPTK)",
@@ -264,6 +276,18 @@ mod tests {
             ..m5_ready()
         });
         assert_eq!(status(&c, "macOS"), Status::Fail);
+    }
+
+    #[test]
+    fn unwritable_homebrew_fails() {
+        let c = evaluate(&Probe {
+            brew_not_writable: true,
+            ..m5_ready()
+        });
+        assert_eq!(status(&c, "Homebrew prava"), Status::Fail);
+        assert!(evaluate(&m5_ready())
+            .iter()
+            .all(|c| c.name != "Homebrew prava"));
     }
 
     #[test]
