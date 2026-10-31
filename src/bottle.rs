@@ -28,6 +28,19 @@ pub fn bottle_path(home: &Path, id: &str) -> PathBuf {
     home.join("bottles").join(id)
 }
 
+/// Prefiks postoji cim wineboot napravi `drive_c`; `system.reg` se upisuje tek kad wineserver izadje.
+pub fn bottle_exists(prefix: &Path) -> bool {
+    prefix.join("drive_c").is_dir()
+}
+
+/// `wineserver` je pored `wine64` u istom bin folderu.
+pub fn wineserver_for(wine: &str) -> String {
+    match Path::new(wine).parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join("wineserver").display().to_string(),
+        _ => "wineserver".into(),
+    }
+}
+
 /// Jedan poziv Wine-a: program, argumenti i env. Odvojeno od izvrsavanja radi testova i --dry-run.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Invocation {
@@ -73,7 +86,8 @@ fn base_env(prefix: &Path) -> BTreeMap<String, String> {
     env
 }
 
-/// `wineboot --init` pravi prefiks; posle toga `winecfg -v` postavlja verziju Windowsa.
+/// `wineboot --init` pravi prefiks, `winecfg -v` postavlja verziju Windowsa,
+/// a `wineserver -w` ceka da Wine zavrsi i upise registry na disk.
 pub fn create_invocations(wine: &str, prefix: &Path, recipe: &Recipe) -> Vec<Invocation> {
     let env = base_env(prefix);
     vec![
@@ -89,6 +103,11 @@ pub fn create_invocations(wine: &str, prefix: &Path, recipe: &Recipe) -> Vec<Inv
                 "-v".into(),
                 recipe.runtime.windows_version.clone(),
             ],
+            env: env.clone(),
+        },
+        Invocation {
+            program: wineserver_for(wine),
+            args: vec!["-w".into()],
             env,
         },
     ]
@@ -163,7 +182,7 @@ pub fn cmd_create(recipe: &Recipe, dry_run: bool) -> ExitCode {
     finish((|| {
         let wine = wine_or_err()?;
         let prefix = bottle_path(&home(), &recipe.game.id);
-        if prefix.join("system.reg").exists() {
+        if bottle_exists(&prefix) {
             println!("bottle vec postoji: {}", prefix.display());
             return Ok(());
         }
@@ -180,7 +199,7 @@ pub fn cmd_steam_install(recipe: &Recipe, dry_run: bool) -> ExitCode {
     finish((|| {
         let wine = wine_or_err()?;
         let prefix = bottle_path(&home(), &recipe.game.id);
-        if !dry_run && !prefix.join("system.reg").exists() {
+        if !dry_run && !bottle_exists(&prefix) {
             return Err(format!(
                 "bottle ne postoji, prvo `bw bottle create {}`",
                 recipe.game.id
@@ -221,7 +240,7 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
     finish((|| {
         let wine = wine_or_err()?;
         let prefix = bottle_path(&home(), &recipe.game.id);
-        if !dry_run && !prefix.join("system.reg").exists() {
+        if !dry_run && !bottle_exists(&prefix) {
             return Err(format!(
                 "bottle ne postoji, prvo `bw bottle create {}`",
                 recipe.game.id
@@ -266,6 +285,27 @@ dxgi = "native,builtin"
     }
 
     #[test]
+    fn bottle_exists_once_drive_c_is_there() {
+        let dir = std::env::temp_dir().join(format!("bw-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(!bottle_exists(&dir));
+        fs::create_dir_all(dir.join("drive_c")).unwrap();
+        assert!(bottle_exists(&dir));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn wineserver_sits_next_to_wine() {
+        assert_eq!(
+            wineserver_for(
+                "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64"
+            ),
+            "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wineserver"
+        );
+        assert_eq!(wineserver_for("wine64"), "wineserver");
+    }
+
+    #[test]
     fn bottle_lives_under_home() {
         assert_eq!(
             bottle_path(Path::new("/h"), "aoe3-de"),
@@ -278,6 +318,8 @@ dxgi = "native,builtin"
         let inv = create_invocations("/w/wine64", Path::new("/p"), &recipe());
         assert_eq!(inv[0].args, ["wineboot", "--init"]);
         assert_eq!(inv[1].args, ["winecfg", "-v", "win10"]);
+        assert_eq!(inv[2].program, "/w/wineserver");
+        assert_eq!(inv[2].args, ["-w"]);
         assert_eq!(inv[0].env["WINEPREFIX"], "/p");
     }
 
