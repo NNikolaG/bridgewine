@@ -1,4 +1,5 @@
-# Pocetne pretpostavke, potvrditi u fazi 0.
+# Izvori: AppleGamingWiki prijave sa M1/M2 i CodeWeavers forum (2024-2025).
+# Potvrditi na M5 u fazi 0.
 [game]
 id = "aoe3-de"
 name = "Age of Empires III: Definitive Edition"
@@ -7,7 +8,8 @@ steam_app_id = 933110
 exe = "AoE3DE_s.exe"
 
 [runtime]
-engine = "gptk"          # gptk | dxmt | wined3d | dxvk-moltenvk
+wine = "crossover"       # gptk | crossover | system
+graphics = "dxvk"        # d3dmetal | dxmt | dxvk | wined3d
 directx = 11
 windows_version = "win10"
 
@@ -15,16 +17,12 @@ windows_version = "win10"
 WINEMSYNC = "1"
 MTL_HUD_ENABLED = "0"    # 1 za Metal HUD sa FPS-om
 
-[dll_overrides]
-
-[winetricks]
-packages = []
-
 [known_issues]
-multiplayer = "proveriti"
-notes = "Popuniti posle faze 0"
+d3dmetal = "Dugmad u meniju gube tekst; koristiti DXVK"
+multiplayer = "Prijave praznog lobija i 'Host Rejected' na CrossOveru, nema potvrdjenog resenja"
+large_games = "4+ igraca: Graphics Quality = Medium i limit 30 FPS protiv preskakanja frejmova"
 
 [tested]
-chip = "M5"
-macos = "26.x"
-rating = "untested"
+chip = "M1 Pro"
+macos = "14.x"
+rating = "silver"

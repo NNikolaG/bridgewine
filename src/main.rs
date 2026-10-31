@@ -1,38 +1,67 @@
-//! BridgeWine CLI (`bw`). Faza 0: samo kostur komandi.
+//! BridgeWine CLI (`bw`).
 
-use std::env;
+mod doctor;
+mod recipe;
+
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "\
-bw - BridgeWine
+use clap::{Parser, Subcommand};
 
-Upotreba:
-  bw doctor                 proveri sistem (macOS, Rosetta 2, GPTK)
-  bw bottle create <igra>   napravi Wine prefiks za igru
-  bw steam install <igra>   instaliraj Windows Steam u bottle
-  bw run <igra>             pokreni igru po receptu
-  bw report <igra>          napravi izvestaj o kompatibilnosti
-  bw --version
-";
+#[derive(Parser)]
+#[command(
+    name = "bw",
+    version,
+    about = "BridgeWine: Windows igre na Apple Silicon Macu"
+)]
+struct Cli {
+    /// Folder sa receptima (podrazumevano: $BW_RECIPES_DIR ili ./recipes)
+    #[arg(long, global = true)]
+    recipes: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Proveri da li Mac ima sve sto treba
+    Doctor,
+    /// Rad sa receptima igara
+    Recipe {
+        #[command(subcommand)]
+        action: RecipeAction,
+    },
+    /// Napravi Wine prefiks za igru (faza 1, u izradi)
+    Bottle { game: String },
+    /// Pokreni igru po receptu (faza 1, u izradi)
+    Run { game: String },
+}
+
+#[derive(Subcommand)]
+enum RecipeAction {
+    /// Izlistaj sve recepte
+    List,
+    /// Prikazi jedan recept
+    Show { id: String },
+    /// Validiraj sve recepte (koristi se i u CI)
+    Check,
+}
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
-        None | Some("-h") | Some("--help") | Some("help") => {
-            print!("{USAGE}");
-            ExitCode::SUCCESS
-        }
-        Some("-V") | Some("--version") => {
-            println!("bw {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
-        Some(cmd @ ("doctor" | "bottle" | "steam" | "run" | "report")) => {
-            eprintln!("bw {cmd}: jos nije implementirano (faza 1)");
+    let cli = Cli::parse();
+    let dir = recipe::recipes_dir(cli.recipes);
+
+    match cli.command {
+        Command::Doctor => doctor::run(),
+        Command::Recipe { action } => match action {
+            RecipeAction::List => recipe::cmd_list(&dir),
+            RecipeAction::Show { id } => recipe::cmd_show(&dir, &id),
+            RecipeAction::Check => recipe::cmd_check(&dir),
+        },
+        Command::Bottle { game } | Command::Run { game } => {
+            eprintln!("bw: '{game}': jos nije implementirano, sledeci korak u fazi 1");
             ExitCode::from(2)
-        }
-        Some(other) => {
-            eprintln!("nepoznata komanda: {other}\n\n{USAGE}");
-            ExitCode::FAILURE
         }
     }
 }
