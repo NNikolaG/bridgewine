@@ -1,0 +1,13 @@
+[package]
+name = "bridgewine"
+version = "0.0.1"
+edition = "2021"
+description = "Pokreni Windows igre na Apple Silicon Macu preko Wine-a i Game Porting Toolkita"
+license = "MIT"
+repository = "https://github.com/NNikolaG/bridgewine"
+
+[[bin]]
+name = "bw"
+path = "src/main.rs"
+
+[dependencies]

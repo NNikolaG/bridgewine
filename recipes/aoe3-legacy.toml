@@ -1,0 +1,14 @@
+# Originalni AoE3 (2007), DX9 put. Pocetne pretpostavke.
+[game]
+id = "aoe3-legacy"
+name = "Age of Empires III: Complete Collection"
+store = "steam"
+steam_app_id = 105450
+
+[runtime]
+engine = "wined3d"
+directx = 9
+windows_version = "win7"
+
+[tested]
+rating = "untested"

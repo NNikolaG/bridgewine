@@ -1,0 +1,30 @@
+# Pocetne pretpostavke, potvrditi u fazi 0.
+[game]
+id = "aoe3-de"
+name = "Age of Empires III: Definitive Edition"
+store = "steam"
+steam_app_id = 933110
+exe = "AoE3DE_s.exe"
+
+[runtime]
+engine = "gptk"          # gptk | dxmt | wined3d | dxvk-moltenvk
+directx = 11
+windows_version = "win10"
+
+[env]
+WINEMSYNC = "1"
+MTL_HUD_ENABLED = "0"    # 1 za Metal HUD sa FPS-om
+
+[dll_overrides]
+
+[winetricks]
+packages = []
+
+[known_issues]
+multiplayer = "proveriti"
+notes = "Popuniti posle faze 0"
+
+[tested]
+chip = "M5"
+macos = "26.x"
+rating = "untested"
