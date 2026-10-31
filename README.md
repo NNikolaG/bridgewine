@@ -1,6 +1,6 @@
 # BridgeWine
 
-Most izmedju Windows igara i Apple Silicon Maca. BridgeWine automatizuje Wine,
+Most izmedju Windows igara i Apple Silicon Maca: besplatna, open-source alternativa CrossOveru. BridgeWine automatizuje Wine,
 Apple Game Porting Toolkit (D3DMetal) i Rosetta 2 tako da se igra pokrene
 jednom komandom. Prva ciljna igra je **Age of Empires III** sa Steama na M5 MacBook Pro.
 

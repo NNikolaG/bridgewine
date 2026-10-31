@@ -28,12 +28,12 @@ pub struct Probe {
     pub xcode_clt: bool,
     pub brew_arm: bool,
     pub brew_x86: bool,
-    pub crossover: bool,
     pub gptk_wine: Option<String>,
     pub d3dmetal: Option<String>,
 }
 
 const GPTK_WINE_PATHS: &[&str] = &[
+    "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64",
     "/usr/local/opt/game-porting-toolkit/bin/wine64",
     "/usr/local/bin/wine64",
     "/opt/homebrew/bin/wine64",
@@ -42,7 +42,7 @@ const GPTK_WINE_PATHS: &[&str] = &[
 const D3DMETAL_PATHS: &[&str] = &[
     "/usr/local/opt/game-porting-toolkit/lib/external/D3DMetal.framework",
     "/Volumes/Evaluation environment for Windows games 2.1/redist/lib/external/D3DMetal.framework",
-    "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib64/apple_gptk/external/D3DMetal.framework",
+    "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/lib/external/D3DMetal.framework",
 ];
 
 fn cmd_ok(prog: &str, args: &[&str]) -> bool {
@@ -81,7 +81,6 @@ pub fn probe() -> Probe {
         xcode_clt: mac && cmd_ok("xcode-select", &["-p"]),
         brew_arm: Path::new("/opt/homebrew/bin/brew").exists(),
         brew_x86: mac && Path::new("/usr/local/bin/brew").exists(),
-        crossover: Path::new("/Applications/CrossOver.app").exists(),
         gptk_wine: std::env::var("BW_WINE")
             .ok()
             .filter(|p| Path::new(p).exists())
@@ -168,17 +167,13 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         fix: (!p.brew_arm && !p.brew_x86).then_some("https://brew.sh"),
     });
 
-    let have_wine = p.crossover || p.gptk_wine.is_some();
     v.push(Check {
-        name: "Wine",
-        status: if have_wine { Ok } else { Fail },
-        detail: match (p.crossover, &p.gptk_wine) {
-            (true, Some(w)) => format!("CrossOver + GPTK ({w})"),
-            (true, None) => "CrossOver".into(),
-            (false, Some(w)) => format!("GPTK ({w})"),
-            (false, None) => "nije pronadjen".into(),
-        },
-        fix: (!have_wine).then_some("instaliraj CrossOver ili Game Porting Toolkit (docs/install-gptk.md); ili postavi BW_WINE"),
+        name: "Wine (GPTK)",
+        status: if p.gptk_wine.is_some() { Ok } else { Fail },
+        detail: p.gptk_wine.clone().unwrap_or_else(|| "nije pronadjen".into()),
+        fix: p.gptk_wine.is_none().then_some(
+            "brew tap gcenx/wine && brew install --cask --no-quarantine gcenx/wine/game-porting-toolkit (docs/install-gptk.md); ili postavi BW_WINE",
+        ),
     });
     v.push(Check {
         name: "D3DMetal",
@@ -233,7 +228,9 @@ mod tests {
             rosetta: true,
             xcode_clt: true,
             brew_arm: true,
-            crossover: true,
+            gptk_wine: Some(
+                "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64".into(),
+            ),
             ..Default::default()
         }
     }
@@ -272,11 +269,10 @@ mod tests {
     #[test]
     fn no_wine_fails() {
         let c = evaluate(&Probe {
-            crossover: false,
             gptk_wine: None,
             ..m5_ready()
         });
-        assert_eq!(status(&c, "Wine"), Status::Fail);
+        assert_eq!(status(&c, "Wine (GPTK)"), Status::Fail);
     }
 
     #[test]
