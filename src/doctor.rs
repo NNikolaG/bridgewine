@@ -184,7 +184,7 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         status: if p.gptk_wine.is_some() { Ok } else { Fail },
         detail: p.gptk_wine.clone().unwrap_or_else(|| "nije pronadjen".into()),
         fix: p.gptk_wine.is_none().then_some(
-            "brew tap gcenx/wine && brew install --cask --no-quarantine gcenx/wine/game-porting-toolkit (docs/install-gptk.md); ili postavi BW_WINE",
+            "brew install --cask gcenx/wine/game-porting-toolkit, pa xattr -dr com.apple.quarantine \"/Applications/Game Porting Toolkit.app\" (docs/install-gptk.md); ili postavi BW_WINE",
         ),
     });
     v.push(Check {

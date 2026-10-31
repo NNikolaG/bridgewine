@@ -54,8 +54,15 @@ to ne treba, obican ARM Homebrew je dovoljan.
 
 ```sh
 brew tap gcenx/wine
-brew install --cask --no-quarantine gcenx/wine/game-porting-toolkit
+brew install --cask gcenx/wine/game-porting-toolkit
+xattr -dr com.apple.quarantine "/Applications/Game Porting Toolkit.app"
 ```
+
+Novije verzije Homebrewa vise nemaju opciju `--no-quarantine`, pa se karantin
+skida rucno sa `xattr`. Bez toga macOS blokira Wine pri prvom pokretanju.
+
+Ako dobijes `/opt/homebrew is not writable`, vrati vlasnistvo sebi sa
+`sudo chown -R $(whoami) /opt/homebrew`. Nikad ne pokreci `sudo brew`.
 
 Proveri gde je Wine zavrsio i zapamti putanju:
 
