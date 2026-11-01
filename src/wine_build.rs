@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::bottle::{home, run_all, Invocation};
+use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
 pub const PATCHES: [(&str, &str); 3] = [
@@ -237,14 +237,8 @@ pub fn cmd_build(dry_run: bool) -> ExitCode {
             }
         }
         if !tarball.exists() {
-            let url = source_url(version);
-            let t = tarball.display().to_string();
             run_all(
-                &[Invocation {
-                    program: "curl".into(),
-                    args: vec!["-fL".into(), "-o".into(), t, url],
-                    env: Default::default(),
-                }],
+                &download_invocations(&source_url(version), &tarball),
                 dry_run,
             )?;
         }

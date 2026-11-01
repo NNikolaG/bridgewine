@@ -2,7 +2,6 @@
 //! (podrazumevano `~/Games/BridgeWine/bottles/<id>`).
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -441,6 +440,22 @@ pub fn run_invocation(wine: &str, prefix: &Path, recipe: &Recipe) -> Result<Invo
     })
 }
 
+/// Preuzimanje u `<dest>.part`, pa `mv` u `dest`: prekinut ili neuspeo curl ne ostavlja
+/// polovican fajl koji bi sledeci put bio prihvacen kao gotov (proveravamo samo `exists()`).
+pub(crate) fn download_invocations(url: &str, dest: &Path) -> Vec<Invocation> {
+    let dest = dest.display().to_string();
+    let part = format!("{dest}.part");
+    let inv = |program: &str, args: &[&str]| Invocation {
+        program: program.into(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+        env: BTreeMap::new(),
+    };
+    vec![
+        inv("curl", &["-fL", "-o", &part, url]),
+        inv("mv", &["-f", &part, &dest]),
+    ]
+}
+
 pub(crate) fn run_all(invs: &[Invocation], dry_run: bool) -> Result<(), String> {
     for inv in invs {
         println!("$ {}", inv.display());
@@ -530,24 +545,11 @@ pub fn cmd_steam_install(recipe: &Recipe, dry_run: bool) -> ExitCode {
         let cache = home().join("cache");
         let setup = cache.join("SteamSetup.exe");
         if !setup.exists() {
-            let curl: Vec<OsString> = vec![
-                "-fL".into(),
-                "-o".into(),
-                setup.clone().into(),
-                STEAM_SETUP_URL.into(),
-            ];
-            println!("$ curl -fL -o {} {STEAM_SETUP_URL}", setup.display());
             if !dry_run {
                 fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-                let ok = Command::new("curl")
-                    .args(&curl)
-                    .status()
-                    .map_err(|e| e.to_string())?
-                    .success();
-                if !ok {
-                    return Err("preuzimanje SteamSetup.exe nije uspelo".into());
-                }
             }
+            run_all(&download_invocations(STEAM_SETUP_URL, &setup), dry_run)
+                .map_err(|e| format!("preuzimanje SteamSetup.exe nije uspelo: {e}"))?;
         }
         prep_session(&wine, &prefix, dry_run)?;
         run_all(&[steam_install_invocation(&wine, &prefix, &setup)], dry_run)?;
@@ -890,6 +892,18 @@ dxgi = "native,builtin"
         let inv = run_invocation(&wine, Path::new("/p"), &recipe()).unwrap();
         assert_eq!(inv.env["VK_ADD_DRIVER_FILES"], icd.display().to_string());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn download_goes_through_part_file() {
+        let inv = download_invocations("https://x/y.exe", Path::new("/c/y.exe"));
+        assert_eq!(inv[0].program, "curl");
+        assert_eq!(
+            inv[0].args,
+            ["-fL", "-o", "/c/y.exe.part", "https://x/y.exe"]
+        );
+        assert_eq!(inv[1].program, "mv");
+        assert_eq!(inv[1].args, ["-f", "/c/y.exe.part", "/c/y.exe"]);
     }
 
     #[test]
