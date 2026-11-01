@@ -720,6 +720,9 @@ pub fn run(recipe: &Recipe, graphics: Option<Graphics>, dry_run: bool) -> Result
         }
         o.push_str(&extra);
     }
+    if graphics == Graphics::Dxvk {
+        inv.env.extend(dxvk::env(|k| std::env::var(k).ok()));
+    }
     println!("grafika: {graphics}");
     run_all(&[inv], dry_run)
 }
