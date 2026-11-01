@@ -2,6 +2,7 @@
 
 mod bottle;
 mod doctor;
+mod ntdll_patch;
 mod recipe;
 mod runtime;
 

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use crate::doctor::find_wine_for;
+use crate::ntdll_patch;
 use crate::recipe::{Graphics, Recipe, Store, WineSource};
 
 const STEAM_SETUP_URL: &str =
@@ -354,9 +355,19 @@ pub fn quarantine_stale_builtins(prefix: &Path) -> Result<Vec<PathBuf>, String> 
     Ok(moved)
 }
 
-fn prep_winehq(prefix: &Path) -> Result<(), String> {
+fn prep_winehq(wine: &str, prefix: &Path) -> Result<(), String> {
     for p in quarantine_stale_builtins(prefix)? {
         println!("sklonjen zastareli GPTK DLL: {}", p.display());
+    }
+    if let Some(so) = ntdll_patch::ntdll_so_for(wine) {
+        match ntdll_patch::apply(&so)? {
+            ntdll_patch::State::Patched => println!("ntdll.so zakrpljen (SIGSYS GSBASE)"),
+            ntdll_patch::State::AlreadyPatched => {}
+            ntdll_patch::State::UnknownBuild => eprintln!(
+                "upozorenje: nepoznat ntdll.so build, SIGSYS zakrpa preskocena: {}",
+                so.display()
+            ),
+        }
     }
     Ok(())
 }
@@ -535,7 +546,7 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
         }
         let inv = run_invocation(&wine, &prefix, recipe)?;
         if recipe.runtime.wine == WineSource::Winehq && !dry_run {
-            prep_winehq(&prefix)?;
+            prep_winehq(&wine, &prefix)?;
         }
         if recipe.game.store == Store::Steam && !dry_run {
             prep_steam(&prefix)?;
