@@ -16,6 +16,13 @@ wine = "winehq"          # gptk | winehq | system
 graphics = "dxmt"        # d3dmetal | dxmt | dxvk | wined3d
 directx = 11
 windows_version = "win10"
+# Nasi Wine moduli (patches/): direktni syscall-ovi (zastita igre), \\.\GLOBALROOT,
+# Rosetta CPU frekvencija. `bw setup` ih skida sa GitHub release-a ili gradi.
+patched = true
+
+[steam]
+# Crn Steam prozor (Wine bug 56014): nas steamwebhelper wrapper. "none" kad Wine to sam resi.
+cef_workaround = "wrapper"
 
 [env]
 WINEMSYNC = "1"

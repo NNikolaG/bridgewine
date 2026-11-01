@@ -89,11 +89,28 @@ pub fn install_invocations(home: &Path, version: &str) -> Vec<Invocation> {
 }
 
 pub fn cmd_install(dry_run: bool) -> ExitCode {
+    match install(dry_run) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("bw: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Gde ce `wine` biti posle `bw runtime install` (za --dry-run pre instalacije).
+pub fn expected_wine(home: &Path) -> String {
+    wine_bin(&runtimes_dir(home).join(app_name(WINEHQ_VERSION)))
+        .display()
+        .to_string()
+}
+
+pub fn install(dry_run: bool) -> Result<(), String> {
     let home = home();
     let app = runtimes_dir(&home).join(app_name(WINEHQ_VERSION));
     if wine_bin(&app).exists() {
         println!("WineHQ {WINEHQ_VERSION} vec instaliran: {}", app.display());
-        return ExitCode::SUCCESS;
+        return Ok(());
     }
     if !dry_run {
         let _ = fs::create_dir_all(home.join("cache"));
@@ -106,16 +123,9 @@ pub fn cmd_install(dry_run: bool) -> ExitCode {
     if tarball.exists() {
         steps.drain(..2);
     }
-    match run_all(&steps, dry_run) {
-        Ok(()) => {
-            println!("WineHQ {WINEHQ_VERSION}: {}", wine_bin(&app).display());
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("bw: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    run_all(&steps, dry_run)?;
+    println!("WineHQ {WINEHQ_VERSION}: {}", wine_bin(&app).display());
+    Ok(())
 }
 
 #[cfg(test)]
