@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::bottle::{home, run_all, Invocation};
+use crate::bottle::{download_invocations, home, run_all, Invocation};
 
 pub const DXMT_VERSION: &str = "v0.80";
 
@@ -132,15 +132,7 @@ pub fn ensure(app: &Path, dry_run: bool) -> Result<(), String> {
     let unpack = cache.join(format!("dxmt-{DXMT_VERSION}"));
     let mut steps = Vec::new();
     if !tarball.exists() {
-        steps.push(inv(
-            "curl",
-            &[
-                "-fL".into(),
-                "-o".into(),
-                tarball.display().to_string(),
-                url(DXMT_VERSION),
-            ],
-        ));
+        steps.extend(download_invocations(&url(DXMT_VERSION), &tarball));
     }
     steps.push(inv("mkdir", &["-p".into(), unpack.display().to_string()]));
     steps.push(inv(
