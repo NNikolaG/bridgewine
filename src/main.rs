@@ -3,6 +3,7 @@
 mod bottle;
 mod doctor;
 mod dxmt;
+mod dxvk;
 mod recipe;
 mod runtime;
 mod wine_build;
@@ -54,6 +55,9 @@ enum Command {
     /// Pokreni igru po receptu
     Run {
         game: String,
+        /// Prevodilac grafike umesto onog iz recepta (dxmt, dxvk, d3dmetal, wined3d)
+        #[arg(long, value_parser = parse_graphics)]
+        graphics: Option<recipe::Graphics>,
         /// Samo ispisi komandu, ne pokreci
         #[arg(long)]
         dry_run: bool,
@@ -145,7 +149,11 @@ fn main() -> ExitCode {
         Command::Runtime {
             action: RuntimeAction::BuildPatched { dry_run },
         } => wine_build::cmd_build(dry_run),
-        Command::Run { game, dry_run } => with_recipe(&dir, &game, |r| bottle::cmd_run(r, dry_run)),
+        Command::Run {
+            game,
+            graphics,
+            dry_run,
+        } => with_recipe(&dir, &game, |r| bottle::cmd_run(r, graphics, dry_run)),
     }
 }
 
@@ -163,5 +171,15 @@ fn with_recipe(
             }
             ExitCode::FAILURE
         }
+    }
+}
+
+fn parse_graphics(s: &str) -> Result<recipe::Graphics, String> {
+    match s {
+        "d3dmetal" => Ok(recipe::Graphics::D3dmetal),
+        "dxmt" => Ok(recipe::Graphics::Dxmt),
+        "dxvk" => Ok(recipe::Graphics::Dxvk),
+        "wined3d" => Ok(recipe::Graphics::Wined3d),
+        _ => Err("ocekujem dxmt, dxvk, d3dmetal ili wined3d".into()),
     }
 }
