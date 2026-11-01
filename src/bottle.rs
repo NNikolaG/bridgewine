@@ -104,8 +104,29 @@ pub fn init_invocations(wine: &str, prefix: &Path) -> Vec<Invocation> {
             args: vec!["wineboot".into(), "-u".into()],
             env: base_env(prefix),
         },
+        Invocation {
+            program: wine.into(),
+            args: vec!["regedit".into(), "/S".into(), NOPROXY_REG_WIN.into()],
+            env: base_env(prefix),
+        },
         wineserver(wine, prefix, "-w"),
     ]
+}
+
+/// Iskljucuje "Automatically detect settings" (WPAD). Bez ovoga Steam pre svakog
+/// preuzimanja trazi `wpad.local`, a ta mDNS pretraga na macOS-u visi ~3 minuta,
+/// pa updater pada sa "http error 0". Format: wininet magic 0x46, flags = 1 (direktno).
+pub const NOPROXY_REG: &str = "REGEDIT4\r\n\r\n\
+[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\Connections]\r\n\
+\"DefaultConnectionSettings\"=hex:46,00,00,00,00,00,00,00,01,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00\r\n";
+const NOPROXY_REG_FILE: &str = "bridgewine-noproxy.reg";
+const NOPROXY_REG_WIN: &str = r"C:\bridgewine-noproxy.reg";
+
+/// Upisuje .reg fajl u `drive_c` da bi ga Wine regedit video kao `C:\...`.
+pub fn write_noproxy_reg(prefix: &Path) -> Result<(), String> {
+    let drive_c = prefix.join("drive_c");
+    fs::create_dir_all(&drive_c).map_err(|e| format!("{}: {e}", drive_c.display()))?;
+    fs::write(drive_c.join(NOPROXY_REG_FILE), NOPROXY_REG).map_err(|e| e.to_string())
 }
 
 /// Ugasi sve Wine procese bottle-a, pa ga ponovo inicijalizuj.
@@ -219,6 +240,9 @@ pub fn cmd_create(recipe: &Recipe, dry_run: bool) -> ExitCode {
         if !dry_run {
             fs::create_dir_all(&prefix).map_err(|e| format!("{}: {e}", prefix.display()))?;
         }
+        if !dry_run {
+            write_noproxy_reg(&prefix)?;
+        }
         run_all(&create_invocations(&wine, &prefix, recipe), dry_run)?;
         println!("bottle spreman: {}", prefix.display());
         Ok(())
@@ -240,6 +264,7 @@ pub fn cmd_steam_install(recipe: &Recipe, dry_run: bool) -> ExitCode {
                 "bottle nije potpuno inicijalizovan ({} kljuceva u registry-ju), popravljam...",
                 registry_keys(&prefix)
             );
+            write_noproxy_reg(&prefix)?;
             run_all(&repair_invocations(&wine, &prefix), false)?;
         }
         let cache = home().join("cache");
@@ -303,6 +328,9 @@ pub fn cmd_repair(recipe: &Recipe, dry_run: bool) -> ExitCode {
                 "bottle ne postoji, prvo `bw bottle create {}`",
                 recipe.game.id
             ));
+        }
+        if !dry_run {
+            write_noproxy_reg(&prefix)?;
         }
         run_all(&repair_invocations(&wine, &prefix), dry_run)?;
         if !dry_run {
@@ -372,7 +400,15 @@ dxgi = "native,builtin"
     fn repair_kills_then_reinits() {
         let inv = repair_invocations("/w/wine64", Path::new("/p"));
         let args: Vec<_> = inv.iter().map(|i| i.args.join(" ")).collect();
-        assert_eq!(args, ["-k", "wineboot -u", "-w"]);
+        assert_eq!(
+            args,
+            [
+                "-k",
+                "wineboot -u",
+                r"regedit /S C:\bridgewine-noproxy.reg",
+                "-w"
+            ]
+        );
     }
 
     #[test]
@@ -390,6 +426,18 @@ dxgi = "native,builtin"
     }
 
     #[test]
+    fn noproxy_reg_disables_autodetect() {
+        assert!(NOPROXY_REG.starts_with("REGEDIT4"));
+        assert!(NOPROXY_REG.contains(r"Internet Settings\Connections]"));
+        // magic 0x46, flags 0x01 (PROXY_TYPE_DIRECT, bez AUTO_DETECT = 0x08)
+        assert!(NOPROXY_REG.contains("hex:46,00,00,00,00,00,00,00,01,00,00,00"));
+        let dir = std::env::temp_dir().join(format!("bw-noproxy-{}", std::process::id()));
+        write_noproxy_reg(&dir).unwrap();
+        assert!(dir.join("drive_c").join(NOPROXY_REG_FILE).exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn bottle_lives_under_home() {
         assert_eq!(
             bottle_path(Path::new("/h"), "aoe3-de"),
@@ -401,10 +449,11 @@ dxgi = "native,builtin"
     fn create_inits_prefix_then_sets_windows_version() {
         let inv = create_invocations("/w/wine64", Path::new("/p"), &recipe());
         assert_eq!(inv[0].args, ["wineboot", "-u"]);
-        assert_eq!(inv[1].program, "/w/wineserver");
-        assert_eq!(inv[1].args, ["-w"]);
-        assert_eq!(inv[2].args, ["winecfg", "-v", "win10"]);
-        assert_eq!(inv[3].args, ["-w"]);
+        assert_eq!(inv[1].args, ["regedit", "/S", NOPROXY_REG_WIN]);
+        assert_eq!(inv[2].program, "/w/wineserver");
+        assert_eq!(inv[2].args, ["-w"]);
+        assert_eq!(inv[3].args, ["winecfg", "-v", "win10"]);
+        assert_eq!(inv[4].args, ["-w"]);
         assert_eq!(inv[0].env["WINEPREFIX"], "/p");
     }
 
