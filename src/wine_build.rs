@@ -2,7 +2,7 @@
 //!
 //! WineHQ 11.21 na macOS-u ne radi sa igrama cija zastita zove direktne syscall-ove
 //! i otvara svoj exe preko `\\.\GLOBALROOT\??\C:\...` (AoE3 DE), a pod Rosettom
-//! prijavljuje CPU od 1000 MHz. Ispravke su u `patches/wine-<ver>/`; ovde ih
+//! prijavljuje CPU od 1000 MHz, a DirectSound krcka jer audio tajmer kasni. Ispravke su u `patches/wine-<ver>/`; ovde ih
 //! primenjujemo na izvorni kod sa dl.winehq.org, gradimo samo izmenjene module
 //! (x86_64, preko Rosette) i menjamo ih u runtime-u. Originali ostaju pored kao `*.orig`.
 
@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
-pub const PATCHES: [(&str, &str); 4] = [
+pub const PATCHES: [(&str, &str); 6] = [
     (
         "0001-ntdll-restore-TEB-GSBASE-after-SIGSYS-on-macOS.patch",
         include_str!(
@@ -38,10 +38,20 @@ pub const PATCHES: [(&str, &str); 4] = [
             "../patches/wine-11.21/0004-kernelbase-start-steamwebhelper-with-software-rendering.patch"
         ),
     ),
+    (
+        "0010-dsound-make-the-mix-queue-depth-configurable.patch",
+        include_str!(
+            "../patches/wine-11.21/0010-dsound-make-the-mix-queue-depth-configurable.patch"
+        ),
+    ),
+    (
+        "0011-winecoreaudio-keep-the-audio-timer-on-time.patch",
+        include_str!("../patches/wine-11.21/0011-winecoreaudio-keep-the-audio-timer-on-time.patch"),
+    ),
 ];
 
 /// Moduli koje patch-evi menjaju: putanja u build folderu -> putanja u `lib/wine/`.
-pub const TARGETS: [(&str, &str); 3] = [
+pub const TARGETS: [(&str, &str); 5] = [
     ("dlls/ntdll/ntdll.so", "x86_64-unix/ntdll.so"),
     (
         "dlls/kernelbase/x86_64-windows/kernelbase.dll",
@@ -50,6 +60,15 @@ pub const TARGETS: [(&str, &str); 3] = [
     (
         "programs/wineboot/x86_64-windows/wineboot.exe",
         "x86_64-windows/wineboot.exe",
+    ),
+    // zvuk: dublji DirectSound red i real-time audio tajmer (AoE3 DE "krcka")
+    (
+        "dlls/dsound/x86_64-windows/dsound.dll",
+        "x86_64-windows/dsound.dll",
+    ),
+    (
+        "dlls/winecoreaudio.drv/winecoreaudio.so",
+        "x86_64-unix/winecoreaudio.so",
     ),
 ];
 
@@ -474,10 +493,9 @@ mod tests {
         assert!(
             cmds[n + 1].starts_with("arch -x86_64 ../wine-11.21/configure CC=clang -arch x86_64")
         );
-        assert!(cmds[n + 2].ends_with(
-            "dlls/ntdll/ntdll.so dlls/kernelbase/x86_64-windows/kernelbase.dll \
-             programs/wineboot/x86_64-windows/wineboot.exe"
-        ));
+        let modules: Vec<&str> = TARGETS.iter().map(|(b, _)| *b).collect();
+        assert!(cmds[n + 2].ends_with(&modules.join(" ")));
+        assert!(cmds[n + 2].contains("dlls/kernelbase/x86_64-windows/kernelbase.dll"));
         assert_eq!(inv[n + 2].args[3], "/s/build-11.21");
         assert_eq!(inv[n + 2].env["PATH"], "/p");
     }

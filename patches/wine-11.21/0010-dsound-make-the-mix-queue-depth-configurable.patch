@@ -1,0 +1,91 @@
+Subject: [PATCH] dsound: Make the mmdevapi mix queue depth configurable.
+
+The mixer keeps only three device periods (~40 ms on macOS) queued, so a
+late mixer wakeup under Rosetta 2 drains the stream ("Probable buffer
+underrun") and games like AoE3 DE crackle. Add MixQueueMs under
+HKCU\Software\Wine\DirectSound (also per app) and the
+WINEDSOUND_QUEUE_MS environment variable; unset keeps upstream behaviour.
+---
+diff --git a/dlls/dsound/dsound_main.c b/dlls/dsound/dsound_main.c
+index e2b9b81..54e8cbe 100644
+--- a/dlls/dsound/dsound_main.c
++++ b/dlls/dsound/dsound_main.c
+@@ -71,6 +71,7 @@ GUID *DSOUND_capture_guids;
+ 
+ /* All default settings, you most likely don't want to touch these, see wiki on UsefulRegistryKeys */
+ int ds_hel_buflen = 32768 * 2;
++int ds_mix_queue_ms = 0; /* 0 = three device periods (upstream behaviour) */
+ 
+ /*
+  * Get a config key from either the app-specific or the default config
+@@ -122,10 +123,19 @@ void setup_dsound_options(void)
+     if (!get_config_key( hkey, appkey, "HelBuflen", buffer, MAX_PATH ))
+         ds_hel_buflen = atoi(buffer);
+ 
++    /* Minimum audio (ms) the mixer keeps queued in the mmdevapi stream. A deeper
++     * queue trades latency for robustness against late mixer wakeups, e.g. under
++     * Rosetta 2. The WINEDSOUND_QUEUE_MS environment variable overrides it. */
++    if (!get_config_key( hkey, appkey, "MixQueueMs", buffer, MAX_PATH ))
++        ds_mix_queue_ms = atoi(buffer);
++    if (GetEnvironmentVariableA( "WINEDSOUND_QUEUE_MS", buffer, MAX_PATH ))
++        ds_mix_queue_ms = atoi(buffer);
++    ds_mix_queue_ms = max(0, min(ds_mix_queue_ms, 500));
++
+     if (appkey) RegCloseKey( appkey );
+     if (hkey) RegCloseKey( hkey );
+ 
+-    TRACE("ds_hel_buflen = %d\n", ds_hel_buflen);
++    TRACE("ds_hel_buflen = %d, ds_mix_queue_ms = %d\n", ds_hel_buflen, ds_mix_queue_ms);
+ }
+ 
+ static const char * get_device_id(LPCGUID pGuid)
+diff --git a/dlls/dsound/dsound_private.h b/dlls/dsound/dsound_private.h
+index fc894b0..f6350a4 100644
+--- a/dlls/dsound/dsound_private.h
++++ b/dlls/dsound/dsound_private.h
+@@ -35,6 +35,7 @@
+ #define DS_MAX_CHANNELS 8
+ 
+ extern int ds_hel_buflen;
++extern int ds_mix_queue_ms;
+ 
+ /*****************************************************************************
+  * Predeclare the interface implementation structures
+diff --git a/dlls/dsound/mixer.c b/dlls/dsound/mixer.c
+index 127ec86..c79264b 100644
+--- a/dlls/dsound/mixer.c
++++ b/dlls/dsound/mixer.c
+@@ -1287,8 +1287,8 @@ static void DSOUND_PerformMix(DirectSoundDevice *device)
+ 		LeaveCriticalSection(&device->mixlock);
+ 		return;
+ 	}
+-	if (frames > device->frag_frames * 3)
+-		frames = device->frag_frames * 3;
++	if (frames > max(device->frag_frames * 3, device->ac_frames))
++		frames = max(device->frag_frames * 3, device->ac_frames);
+ 
+ 	if (device->priolevel != DSSCL_WRITEPRIMARY) {
+ 		void *buffer = NULL;
+diff --git a/dlls/dsound/primary.c b/dlls/dsound/primary.c
+index 3331b31..d117865 100644
+--- a/dlls/dsound/primary.c
++++ b/dlls/dsound/primary.c
+@@ -327,7 +327,7 @@ HRESULT DSOUND_ReopenDevice(DirectSoundDevice *device, BOOL forcewave)
+     hres = IAudioClient_Initialize(client,
+             AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_NOPERSIST |
+             AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+-            800000, 0, wfx, NULL);
++            max(800000, (REFERENCE_TIME)ds_mix_queue_ms * 10000 * 2), 0, wfx, NULL);
+     if(FAILED(hres)){
+         IAudioClient_Release(client);
+         ERR("Initialize failed: %08lx\n", hres);
+@@ -368,7 +368,8 @@ HRESULT DSOUND_ReopenDevice(DirectSoundDevice *device, BOOL forcewave)
+     period_ms = (period + 9999) / 10000;
+     frag_frames = MulDiv(wfx->nSamplesPerSec, period, 10000000);
+ 
+-    aclen_frames = min(acbuf_frames, 3 * frag_frames);
++    aclen_frames = min(acbuf_frames, max(3 * frag_frames,
++                       (DWORD)MulDiv(wfx->nSamplesPerSec, ds_mix_queue_ms, 1000)));
+ 
+     TRACE("period %lu ms frag_frames %lu buf_frames %u\n", period_ms, frag_frames, aclen_frames);
+ 

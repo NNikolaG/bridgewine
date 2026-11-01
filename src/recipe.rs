@@ -106,6 +106,13 @@ pub enum Graphics {
 }
 
 impl Graphics {
+    /// Treba li DXMT u runtime-u. Za DXVK takodje: DXVK vazi samo za exe igre,
+    /// a Steam i njegov CEF ostaju na runtime-ovom builtin d3d11/dxgi, sto je
+    /// sa DXMT-om provereno na M5 (2026-11-01).
+    pub fn needs_dxmt_runtime(self) -> bool {
+        matches!(self, Graphics::Dxmt | Graphics::Dxvk)
+    }
+
     /// DirectX verzije koje ovaj prevodilac pokriva.
     pub fn supports(self, dx: u8) -> bool {
         match self {
