@@ -61,8 +61,12 @@ fn default_windows_version() -> String {
 #[derive(Debug, Deserialize, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum WineSource {
+    /// Appleov Game Porting Toolkit (Wine + D3DMetal).
     Gptk,
-    Crossover,
+    /// Zvanicni WineHQ build (Gcenx/macOS_Wine_builds) u `$BW_HOME/runtimes`, `bw runtime install`.
+    /// Potreban za 64-bitni Steam klijent (2026+): GPTK-ov Wine 7.7 nema BCrypt pseudo-handle.
+    Winehq,
+    /// Bilo koji drugi Wine (npr. iz Homebrewa), putanja preko BW_WINE.
     System,
 }
 
@@ -172,8 +176,8 @@ impl Recipe {
                 rt.graphics, rt.directx
             ));
         }
-        if rt.graphics == Graphics::D3dmetal && rt.wine == WineSource::System {
-            errs.push("d3dmetal zahteva wine = \"gptk\" ili \"crossover\"".into());
+        if rt.graphics == Graphics::D3dmetal && rt.wine != WineSource::Gptk {
+            errs.push("d3dmetal zahteva wine = \"gptk\"".into());
         }
         for (dll, mode) in &self.dll_overrides {
             if !DLL_MODES.contains(&mode.as_str()) {
@@ -363,7 +367,7 @@ store = "steam"
 steam_app_id = 933110
 
 [runtime]
-wine = "crossover"
+wine = "gptk"
 graphics = "dxvk"
 directx = 11
 
@@ -411,6 +415,11 @@ d3d11 = "native,builtin"
             .validate("aoe3-de")
             .iter()
             .any(|e| e.contains("steam_app_id")));
+    }
+
+    #[test]
+    fn crossover_is_not_a_wine_source() {
+        assert!(Recipe::parse(&GOOD.replace("wine = \"gptk\"", "wine = \"crossover\"")).is_err());
     }
 
     #[test]

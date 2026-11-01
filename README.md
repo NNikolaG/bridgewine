@@ -1,6 +1,6 @@
 # BridgeWine
 
-Most izmedju Windows igara i Apple Silicon Maca. BridgeWine automatizuje Wine,
+Most izmedju Windows igara i Apple Silicon Maca: besplatna, open-source alternativa CrossOveru. BridgeWine automatizuje Wine,
 Apple Game Porting Toolkit (D3DMetal) i Rosetta 2 tako da se igra pokrene
 jednom komandom. Prva ciljna igra je **Age of Empires III** sa Steama na M5 MacBook Pro.
 
@@ -27,6 +27,23 @@ cargo build --release
 ./target/release/bw recipe show aoe3-de # recept za AoE3 DE
 ./target/release/bw recipe check        # validacija (radi i CI)
 ```
+
+## AoE3 DE za cetiri komande
+
+```sh
+bw runtime install         # WineHQ Wine u ~/Games/BridgeWine/runtimes (64-bitni Steam ne radi na GPTK Wine 7.7)
+bw bottle create aoe3-de   # Wine prefiks u ~/Games/BridgeWine/bottles/aoe3-de
+bw steam install aoe3-de   # skida i tiho instalira Windows Steam
+bw run aoe3-de             # pokrece igru kroz Steam (-applaunch 933110)
+```
+
+Ako Steam javi "Steam needs to be online" ili "http error 0", bottle nije
+potpuno inicijalizovan: `bw bottle repair aoe3-de`. WPAD zastoj (`wpad.local` DNS upit
+koji visi ~135 s) `bw run` i `bw steam install` sami zaobilaze praznim DNS domenom u bottle-u. Sve Wine procese gasi
+`bw bottle kill aoe3-de`.
+
+Svaka komanda prima `--dry-run` da samo ispise sta bi pokrenula. `BW_HOME`
+menja gde zive bottle-i, a `BW_WINE` koji Wine se koristi.
 
 ## Roadmap
 

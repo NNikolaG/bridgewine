@@ -1,4 +1,4 @@
-# Izvori: AppleGamingWiki prijave sa M1/M2 i CodeWeavers forum (2024-2025).
+# Izvori: AppleGamingWiki i korisnicke prijave (2024-2025).
 # Potvrditi na M5 u fazi 0.
 [game]
 id = "aoe3-de"
@@ -8,8 +8,12 @@ steam_app_id = 933110
 exe = "AoE3DE_s.exe"
 
 [runtime]
-wine = "crossover"       # gptk | crossover | system
-graphics = "dxvk"        # d3dmetal | dxmt | dxvk | wined3d
+# 64-bitni Steam klijent (2026+) pada na GPTK-ovom Wine 7.7 (nema BCrypt pseudo-handle),
+# pa bottle koristi WineHQ (`bw runtime install`). D3DMetal ide samo uz GPTK Wine.
+# wined3d (OpenGL 4.1) nema D3D11 FL11 ("video hardware does not support DirectX 11"),
+# pa D3D11 ide preko DXMT-a (Metal), koji bw sam instalira u runtime.
+wine = "winehq"          # gptk | winehq | system
+graphics = "dxmt"        # d3dmetal | dxmt | dxvk | wined3d
 directx = 11
 windows_version = "win10"
 
@@ -18,11 +22,11 @@ WINEMSYNC = "1"
 MTL_HUD_ENABLED = "0"    # 1 za Metal HUD sa FPS-om
 
 [known_issues]
-d3dmetal = "Dugmad u meniju gube tekst; koristiti DXVK"
-multiplayer = "Prijave praznog lobija i 'Host Rejected' na CrossOveru, nema potvrdjenog resenja"
+d3dmetal = "Prijavljeno: dugmad u meniju gube tekst; ako se desi, probati DXVK-macOS (docs/install-gptk.md, korak 9)"
+multiplayer = "Prijave praznog lobija i 'Host Rejected' na Macu, nema potvrdjenog resenja"
 large_games = "4+ igraca: Graphics Quality = Medium i limit 30 FPS protiv preskakanja frejmova"
 
 [tested]
-chip = "M1 Pro"
-macos = "14.x"
-rating = "silver"
+chip = "M5"
+macos = "27.0.1"
+rating = "untested"

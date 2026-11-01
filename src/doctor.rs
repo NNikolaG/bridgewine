@@ -3,6 +3,9 @@
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
+use crate::recipe::WineSource;
+use crate::runtime;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Status {
     Ok,
@@ -27,13 +30,17 @@ pub struct Probe {
     pub rosetta: bool,
     pub xcode_clt: bool,
     pub brew_arm: bool,
+    /// /opt/homebrew postoji ali trenutni korisnik ne sme da pise u njega.
+    pub brew_not_writable: bool,
     pub brew_x86: bool,
-    pub crossover: bool,
     pub gptk_wine: Option<String>,
+    /// WineHQ build iz `$BW_HOME/runtimes` (za 64-bitni Steam).
+    pub winehq_wine: Option<String>,
     pub d3dmetal: Option<String>,
 }
 
-const GPTK_WINE_PATHS: &[&str] = &[
+pub const GPTK_WINE_PATHS: &[&str] = &[
+    "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64",
     "/usr/local/opt/game-porting-toolkit/bin/wine64",
     "/usr/local/bin/wine64",
     "/opt/homebrew/bin/wine64",
@@ -42,7 +49,7 @@ const GPTK_WINE_PATHS: &[&str] = &[
 const D3DMETAL_PATHS: &[&str] = &[
     "/usr/local/opt/game-porting-toolkit/lib/external/D3DMetal.framework",
     "/Volumes/Evaluation environment for Windows games 2.1/redist/lib/external/D3DMetal.framework",
-    "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib64/apple_gptk/external/D3DMetal.framework",
+    "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/lib/external/D3DMetal.framework",
 ];
 
 fn cmd_ok(prog: &str, args: &[&str]) -> bool {
@@ -67,6 +74,26 @@ fn first_existing(paths: &[&str]) -> Option<String> {
         .map(|p| p.to_string())
 }
 
+/// Wine koji BridgeWine koristi: $BW_WINE ako postoji, inace prvi GPTK wine64.
+pub fn find_wine() -> Option<String> {
+    find_wine_for(WineSource::Gptk)
+}
+
+fn bw_wine() -> Option<String> {
+    std::env::var("BW_WINE")
+        .ok()
+        .filter(|p| Path::new(p).exists())
+}
+
+/// Wine za recept: $BW_WINE uvek ima prednost, inace po izvoru iz recepta.
+pub fn find_wine_for(src: WineSource) -> Option<String> {
+    bw_wine().or_else(|| match src {
+        WineSource::Gptk => first_existing(GPTK_WINE_PATHS),
+        WineSource::Winehq => runtime::winehq_wine(),
+        WineSource::System => None,
+    })
+}
+
 pub fn probe() -> Probe {
     let os = std::env::consts::OS.to_string();
     let mac = os == "macos";
@@ -80,12 +107,11 @@ pub fn probe() -> Probe {
         rosetta: mac && cmd_ok("arch", &["-x86_64", "/usr/bin/true"]),
         xcode_clt: mac && cmd_ok("xcode-select", &["-p"]),
         brew_arm: Path::new("/opt/homebrew/bin/brew").exists(),
+        brew_not_writable: Path::new("/opt/homebrew").exists()
+            && !cmd_ok("test", &["-w", "/opt/homebrew"]),
         brew_x86: mac && Path::new("/usr/local/bin/brew").exists(),
-        crossover: Path::new("/Applications/CrossOver.app").exists(),
-        gptk_wine: std::env::var("BW_WINE")
-            .ok()
-            .filter(|p| Path::new(p).exists())
-            .or_else(|| first_existing(GPTK_WINE_PATHS)),
+        gptk_wine: find_wine(),
+        winehq_wine: runtime::winehq_wine(),
         d3dmetal: first_existing(D3DMETAL_PATHS),
         os,
     }
@@ -167,18 +193,31 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         },
         fix: (!p.brew_arm && !p.brew_x86).then_some("https://brew.sh"),
     });
+    if p.brew_not_writable {
+        v.push(Check {
+            name: "Homebrew prava",
+            status: Fail,
+            detail: "/opt/homebrew nije upisiv za tvog korisnika".into(),
+            fix: Some("sudo chown -R $(whoami) /opt/homebrew  (nikad `sudo brew`)"),
+        });
+    }
 
-    let have_wine = p.crossover || p.gptk_wine.is_some();
     v.push(Check {
-        name: "Wine",
-        status: if have_wine { Ok } else { Fail },
-        detail: match (p.crossover, &p.gptk_wine) {
-            (true, Some(w)) => format!("CrossOver + GPTK ({w})"),
-            (true, None) => "CrossOver".into(),
-            (false, Some(w)) => format!("GPTK ({w})"),
-            (false, None) => "nije pronadjen".into(),
-        },
-        fix: (!have_wine).then_some("instaliraj CrossOver ili Game Porting Toolkit (docs/install-gptk.md); ili postavi BW_WINE"),
+        name: "Wine (GPTK)",
+        status: if p.gptk_wine.is_some() { Ok } else { Fail },
+        detail: p.gptk_wine.clone().unwrap_or_else(|| "nije pronadjen".into()),
+        fix: p.gptk_wine.is_none().then_some(
+            "brew install --cask gcenx/wine/game-porting-toolkit, pa xattr -dr com.apple.quarantine \"/Applications/Game Porting Toolkit.app\" (docs/install-gptk.md); ili postavi BW_WINE",
+        ),
+    });
+    v.push(Check {
+        name: "Wine (WineHQ)",
+        status: if p.winehq_wine.is_some() { Ok } else { Warn },
+        detail: p
+            .winehq_wine
+            .clone()
+            .unwrap_or_else(|| "nije instaliran (treba za recepte sa wine = \"winehq\")".into()),
+        fix: p.winehq_wine.is_none().then_some("bw runtime install"),
     });
     v.push(Check {
         name: "D3DMetal",
@@ -233,7 +272,9 @@ mod tests {
             rosetta: true,
             xcode_clt: true,
             brew_arm: true,
-            crossover: true,
+            gptk_wine: Some(
+                "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64".into(),
+            ),
             ..Default::default()
         }
     }
@@ -270,13 +311,24 @@ mod tests {
     }
 
     #[test]
+    fn unwritable_homebrew_fails() {
+        let c = evaluate(&Probe {
+            brew_not_writable: true,
+            ..m5_ready()
+        });
+        assert_eq!(status(&c, "Homebrew prava"), Status::Fail);
+        assert!(evaluate(&m5_ready())
+            .iter()
+            .all(|c| c.name != "Homebrew prava"));
+    }
+
+    #[test]
     fn no_wine_fails() {
         let c = evaluate(&Probe {
-            crossover: false,
             gptk_wine: None,
             ..m5_ready()
         });
-        assert_eq!(status(&c, "Wine"), Status::Fail);
+        assert_eq!(status(&c, "Wine (GPTK)"), Status::Fail);
     }
 
     #[test]

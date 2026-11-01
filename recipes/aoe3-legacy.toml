@@ -6,7 +6,7 @@ store = "steam"
 steam_app_id = 105450
 
 [runtime]
-wine = "crossover"
+wine = "gptk"
 graphics = "wined3d"
 directx = 9
 windows_version = "win7"

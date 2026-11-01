@@ -1,0 +1,21 @@
+Subject: [PATCH] wineboot: Don't report a CPU clock below the processor's max MHz.
+
+Rosetta 2 runs the TSC at a fixed 1 GHz, so ~MHz under
+HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor ended up as 1000 on
+Apple Silicon and games refuse to start ("requires 1.8 GHz"). Use
+NtPowerInformation's MaxMhz when it is higher than the TSC rate.
+---
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 7dda9ec..07f191d 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -732,7 +732,8 @@ static void create_bios_processor_values( HKEY system_key, const char *buf, UINT
+                                   KEY_ALL_ACCESS, NULL, &hkey, NULL ))
+             {
+                 DWORD tsc_freq_mhz = (DWORD)(tsc_frequency / 1000000ull); /* Hz -> Mhz */
+-                if (!tsc_freq_mhz) tsc_freq_mhz = power_info[core].MaxMhz;
++                /* Rosetta 2 runs the TSC at a fixed 1 GHz, below the real CPU clock */
++                if (tsc_freq_mhz < power_info[core].MaxMhz) tsc_freq_mhz = power_info[core].MaxMhz;
+ 
+                 RegSetValueExW( hkey, L"FeatureSet", 0, REG_DWORD,
+                                 (BYTE *)&sci.ProcessorFeatureBits, sizeof(DWORD) );
