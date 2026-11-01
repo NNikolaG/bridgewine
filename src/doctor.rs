@@ -3,6 +3,9 @@
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
+use crate::recipe::WineSource;
+use crate::runtime;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Status {
     Ok,
@@ -31,6 +34,8 @@ pub struct Probe {
     pub brew_not_writable: bool,
     pub brew_x86: bool,
     pub gptk_wine: Option<String>,
+    /// WineHQ build iz `$BW_HOME/runtimes` (za 64-bitni Steam).
+    pub winehq_wine: Option<String>,
     pub d3dmetal: Option<String>,
 }
 
@@ -71,10 +76,22 @@ fn first_existing(paths: &[&str]) -> Option<String> {
 
 /// Wine koji BridgeWine koristi: $BW_WINE ako postoji, inace prvi GPTK wine64.
 pub fn find_wine() -> Option<String> {
+    find_wine_for(WineSource::Gptk)
+}
+
+fn bw_wine() -> Option<String> {
     std::env::var("BW_WINE")
         .ok()
         .filter(|p| Path::new(p).exists())
-        .or_else(|| first_existing(GPTK_WINE_PATHS))
+}
+
+/// Wine za recept: $BW_WINE uvek ima prednost, inace po izvoru iz recepta.
+pub fn find_wine_for(src: WineSource) -> Option<String> {
+    bw_wine().or_else(|| match src {
+        WineSource::Gptk => first_existing(GPTK_WINE_PATHS),
+        WineSource::Winehq => runtime::winehq_wine(),
+        WineSource::System => None,
+    })
 }
 
 pub fn probe() -> Probe {
@@ -93,10 +110,8 @@ pub fn probe() -> Probe {
         brew_not_writable: Path::new("/opt/homebrew").exists()
             && !cmd_ok("test", &["-w", "/opt/homebrew"]),
         brew_x86: mac && Path::new("/usr/local/bin/brew").exists(),
-        gptk_wine: std::env::var("BW_WINE")
-            .ok()
-            .filter(|p| Path::new(p).exists())
-            .or_else(|| first_existing(GPTK_WINE_PATHS)),
+        gptk_wine: find_wine(),
+        winehq_wine: runtime::winehq_wine(),
         d3dmetal: first_existing(D3DMETAL_PATHS),
         os,
     }
@@ -194,6 +209,15 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         fix: p.gptk_wine.is_none().then_some(
             "brew install --cask gcenx/wine/game-porting-toolkit, pa xattr -dr com.apple.quarantine \"/Applications/Game Porting Toolkit.app\" (docs/install-gptk.md); ili postavi BW_WINE",
         ),
+    });
+    v.push(Check {
+        name: "Wine (WineHQ)",
+        status: if p.winehq_wine.is_some() { Ok } else { Warn },
+        detail: p
+            .winehq_wine
+            .clone()
+            .unwrap_or_else(|| "nije instaliran (treba za recepte sa wine = \"winehq\")".into()),
+        fix: p.winehq_wine.is_none().then_some("bw runtime install"),
     });
     v.push(Check {
         name: "D3DMetal",

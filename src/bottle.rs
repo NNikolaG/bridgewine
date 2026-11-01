@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use crate::doctor::find_wine;
-use crate::recipe::{Graphics, Recipe, Store};
+use crate::doctor::find_wine_for;
+use crate::recipe::{Graphics, Recipe, Store, WineSource};
 
 const STEAM_SETUP_URL: &str =
     "https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe";
@@ -256,7 +256,7 @@ pub fn run_invocation(wine: &str, prefix: &Path, recipe: &Recipe) -> Result<Invo
     })
 }
 
-fn run_all(invs: &[Invocation], dry_run: bool) -> Result<(), String> {
+pub(crate) fn run_all(invs: &[Invocation], dry_run: bool) -> Result<(), String> {
     for inv in invs {
         println!("$ {}", inv.display());
         if dry_run {
@@ -273,8 +273,13 @@ fn run_all(invs: &[Invocation], dry_run: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn wine_or_err() -> Result<String, String> {
-    find_wine().ok_or_else(|| "Wine (GPTK) nije pronadjen; pokreni `bw doctor`".into())
+fn wine_or_err(recipe: &Recipe) -> Result<String, String> {
+    let src = recipe.runtime.wine;
+    find_wine_for(src).ok_or_else(|| match src {
+        WineSource::Winehq => "WineHQ Wine nije instaliran; pokreni `bw runtime install`".into(),
+        WineSource::Gptk => "Wine (GPTK) nije pronadjen; pokreni `bw doctor`".into(),
+        WineSource::System => "wine = \"system\" trazi BW_WINE=<putanja do wine>".into(),
+    })
 }
 
 fn finish(r: Result<(), String>) -> ExitCode {
@@ -289,7 +294,7 @@ fn finish(r: Result<(), String>) -> ExitCode {
 
 pub fn cmd_create(recipe: &Recipe, dry_run: bool) -> ExitCode {
     finish((|| {
-        let wine = wine_or_err()?;
+        let wine = wine_or_err(recipe)?;
         let prefix = bottle_path(&home(), &recipe.game.id);
         if bottle_exists(&prefix) {
             println!("bottle vec postoji: {}", prefix.display());
@@ -309,7 +314,7 @@ pub fn cmd_create(recipe: &Recipe, dry_run: bool) -> ExitCode {
 
 pub fn cmd_steam_install(recipe: &Recipe, dry_run: bool) -> ExitCode {
     finish((|| {
-        let wine = wine_or_err()?;
+        let wine = wine_or_err(recipe)?;
         let prefix = bottle_path(&home(), &recipe.game.id);
         if !dry_run && !bottle_exists(&prefix) {
             return Err(format!(
@@ -359,7 +364,7 @@ pub fn cmd_steam_install(recipe: &Recipe, dry_run: bool) -> ExitCode {
 
 pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
     finish((|| {
-        let wine = wine_or_err()?;
+        let wine = wine_or_err(recipe)?;
         let prefix = bottle_path(&home(), &recipe.game.id);
         if !dry_run && !bottle_exists(&prefix) {
             return Err(format!(
@@ -381,7 +386,7 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
 
 pub fn cmd_repair(recipe: &Recipe, dry_run: bool) -> ExitCode {
     finish((|| {
-        let wine = wine_or_err()?;
+        let wine = wine_or_err(recipe)?;
         let prefix = bottle_path(&home(), &recipe.game.id);
         if !dry_run && !bottle_exists(&prefix) {
             return Err(format!(
@@ -402,7 +407,7 @@ pub fn cmd_repair(recipe: &Recipe, dry_run: bool) -> ExitCode {
 
 pub fn cmd_kill(recipe: &Recipe, dry_run: bool) -> ExitCode {
     finish((|| {
-        let wine = wine_or_err()?;
+        let wine = wine_or_err(recipe)?;
         let prefix = bottle_path(&home(), &recipe.game.id);
         run_all(&[wineserver(&wine, &prefix, "-k")], dry_run)
     })())

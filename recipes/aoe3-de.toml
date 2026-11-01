@@ -8,8 +8,10 @@ steam_app_id = 933110
 exe = "AoE3DE_s.exe"
 
 [runtime]
-wine = "gptk"            # gptk | system
-graphics = "d3dmetal"    # d3dmetal | dxmt | dxvk | wined3d
+# 64-bitni Steam klijent (2026+) pada na GPTK-ovom Wine 7.7 (nema BCrypt pseudo-handle),
+# pa bottle koristi WineHQ (`bw runtime install`). D3DMetal ide samo uz GPTK Wine.
+wine = "winehq"          # gptk | winehq | system
+graphics = "wined3d"     # d3dmetal | dxmt | dxvk | wined3d
 directx = 11
 windows_version = "win10"
 

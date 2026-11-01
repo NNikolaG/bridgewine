@@ -63,6 +63,9 @@ fn default_windows_version() -> String {
 pub enum WineSource {
     /// Appleov Game Porting Toolkit (Wine + D3DMetal).
     Gptk,
+    /// Zvanicni WineHQ build (Gcenx/macOS_Wine_builds) u `$BW_HOME/runtimes`, `bw runtime install`.
+    /// Potreban za 64-bitni Steam klijent (2026+): GPTK-ov Wine 7.7 nema BCrypt pseudo-handle.
+    Winehq,
     /// Bilo koji drugi Wine (npr. iz Homebrewa), putanja preko BW_WINE.
     System,
 }
@@ -173,7 +176,7 @@ impl Recipe {
                 rt.graphics, rt.directx
             ));
         }
-        if rt.graphics == Graphics::D3dmetal && rt.wine == WineSource::System {
+        if rt.graphics == Graphics::D3dmetal && rt.wine != WineSource::Gptk {
             errs.push("d3dmetal zahteva wine = \"gptk\"".into());
         }
         for (dll, mode) in &self.dll_overrides {

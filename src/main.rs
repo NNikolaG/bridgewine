@@ -3,6 +3,7 @@
 mod bottle;
 mod doctor;
 mod recipe;
+mod runtime;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -42,6 +43,11 @@ enum Command {
     Steam {
         #[command(subcommand)]
         action: SteamAction,
+    },
+    /// Wine runtime-ovi u $BW_HOME/runtimes
+    Runtime {
+        #[command(subcommand)]
+        action: RuntimeAction,
     },
     /// Pokreni igru po receptu
     Run {
@@ -85,6 +91,15 @@ enum SteamAction {
 }
 
 #[derive(Subcommand)]
+enum RuntimeAction {
+    /// Skini WineHQ Wine (Gcenx build) za 64-bitni Steam
+    Install {
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum RecipeAction {
     /// Izlistaj sve recepte
     List,
@@ -117,6 +132,9 @@ fn main() -> ExitCode {
         Command::Steam {
             action: SteamAction::Install { game, dry_run },
         } => with_recipe(&dir, &game, |r| bottle::cmd_steam_install(r, dry_run)),
+        Command::Runtime {
+            action: RuntimeAction::Install { dry_run },
+        } => runtime::cmd_install(dry_run),
         Command::Run { game, dry_run } => with_recipe(&dir, &game, |r| bottle::cmd_run(r, dry_run)),
     }
 }
