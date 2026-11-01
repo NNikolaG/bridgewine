@@ -2,9 +2,9 @@
 
 mod bottle;
 mod doctor;
-mod ntdll_patch;
 mod recipe;
 mod runtime;
+mod wine_build;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -98,6 +98,11 @@ enum RuntimeAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Napravi nase Wine module (izvorni kod + patches/) i ubaci ih u runtime
+    BuildPatched {
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -136,6 +141,9 @@ fn main() -> ExitCode {
         Command::Runtime {
             action: RuntimeAction::Install { dry_run },
         } => runtime::cmd_install(dry_run),
+        Command::Runtime {
+            action: RuntimeAction::BuildPatched { dry_run },
+        } => wine_build::cmd_build(dry_run),
         Command::Run { game, dry_run } => with_recipe(&dir, &game, |r| bottle::cmd_run(r, dry_run)),
     }
 }

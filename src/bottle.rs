@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use crate::doctor::find_wine_for;
-use crate::ntdll_patch;
 use crate::recipe::{Graphics, Recipe, Store, WineSource};
+use crate::wine_build;
 
 const STEAM_SETUP_URL: &str =
     "https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe";
@@ -359,14 +359,11 @@ fn prep_winehq(wine: &str, prefix: &Path) -> Result<(), String> {
     for p in quarantine_stale_builtins(prefix)? {
         println!("sklonjen zastareli GPTK DLL: {}", p.display());
     }
-    if let Some(so) = ntdll_patch::ntdll_so_for(wine) {
-        match ntdll_patch::apply(&so)? {
-            ntdll_patch::State::Patched => println!("ntdll.so zakrpljen (SIGSYS GSBASE)"),
-            ntdll_patch::State::AlreadyPatched => {}
-            ntdll_patch::State::UnknownBuild => eprintln!(
-                "upozorenje: nepoznat ntdll.so build, SIGSYS zakrpa preskocena: {}",
-                so.display()
-            ),
+    if let Some(app) = wine_build::app_for(wine) {
+        if !wine_build::is_installed(&app) {
+            eprintln!(
+                "upozorenje: runtime nema BridgeWine Wine module (igre sa zastitom padaju); pokreni `bw runtime build-patched`"
+            );
         }
     }
     Ok(())
