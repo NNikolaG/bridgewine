@@ -2,7 +2,7 @@
 //!
 //! WineHQ 11.21 na macOS-u ne radi sa igrama cija zastita zove direktne syscall-ove
 //! i otvara svoj exe preko `\\.\GLOBALROOT\??\C:\...` (AoE3 DE), a pod Rosettom
-//! prijavljuje CPU od 1000 MHz. Ispravke su u `patches/wine-<ver>/`; ovde ih
+//! prijavljuje CPU od 1000 MHz, a DirectSound krcka jer audio tajmer kasni. Ispravke su u `patches/wine-<ver>/`; ovde ih
 //! primenjujemo na izvorni kod sa dl.winehq.org, gradimo samo izmenjene module
 //! (x86_64, preko Rosette) i menjamo ih u runtime-u. Originali ostaju pored kao `*.orig`.
 
@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
-pub const PATCHES: [(&str, &str); 3] = [
+pub const PATCHES: [(&str, &str); 5] = [
     (
         "0001-ntdll-restore-TEB-GSBASE-after-SIGSYS-on-macOS.patch",
         include_str!(
@@ -32,14 +32,33 @@ pub const PATCHES: [(&str, &str); 3] = [
             "../patches/wine-11.21/0003-wineboot-dont-report-cpu-clock-below-max-mhz.patch"
         ),
     ),
+    (
+        "0010-dsound-make-the-mix-queue-depth-configurable.patch",
+        include_str!(
+            "../patches/wine-11.21/0010-dsound-make-the-mix-queue-depth-configurable.patch"
+        ),
+    ),
+    (
+        "0011-winecoreaudio-keep-the-audio-timer-on-time.patch",
+        include_str!("../patches/wine-11.21/0011-winecoreaudio-keep-the-audio-timer-on-time.patch"),
+    ),
 ];
 
 /// Moduli koje patch-evi menjaju: putanja u build folderu -> putanja u `lib/wine/`.
-pub const TARGETS: [(&str, &str); 2] = [
+pub const TARGETS: [(&str, &str); 4] = [
     ("dlls/ntdll/ntdll.so", "x86_64-unix/ntdll.so"),
     (
         "programs/wineboot/x86_64-windows/wineboot.exe",
         "x86_64-windows/wineboot.exe",
+    ),
+    // zvuk: dublji DirectSound red i real-time audio tajmer (AoE3 DE "krcka")
+    (
+        "dlls/dsound/x86_64-windows/dsound.dll",
+        "x86_64-windows/dsound.dll",
+    ),
+    (
+        "dlls/winecoreaudio.drv/winecoreaudio.so",
+        "x86_64-unix/winecoreaudio.so",
     ),
 ];
 
@@ -456,13 +475,16 @@ mod tests {
         assert!(cmds[2].starts_with("patch -p1 --forward -i /s/patches-11.21/0001-"));
         assert!(cmds[3].starts_with("patch -p1 --forward -i /s/patches-11.21/0002-"));
         assert!(cmds[4].starts_with("patch -p1 --forward -i /s/patches-11.21/0003-"));
+        assert!(cmds[5].starts_with("patch -p1 --forward -i /s/patches-11.21/0010-dsound"));
+        assert!(cmds[6].starts_with("patch -p1 --forward -i /s/patches-11.21/0011-winecoreaudio"));
         assert_eq!(inv[2].args[3], "/s/wine-11.21");
-        assert!(cmds[6].starts_with("arch -x86_64 ../wine-11.21/configure CC=clang -arch x86_64"));
-        assert!(
-            cmds[7].ends_with("dlls/ntdll/ntdll.so programs/wineboot/x86_64-windows/wineboot.exe")
-        );
-        assert_eq!(inv[7].args[3], "/s/build-11.21");
-        assert_eq!(inv[7].env["PATH"], "/p");
+        assert!(cmds[8].starts_with("arch -x86_64 ../wine-11.21/configure CC=clang -arch x86_64"));
+        assert!(cmds[9].ends_with(
+            "dlls/ntdll/ntdll.so programs/wineboot/x86_64-windows/wineboot.exe \
+             dlls/dsound/x86_64-windows/dsound.dll dlls/winecoreaudio.drv/winecoreaudio.so"
+        ));
+        assert_eq!(inv[9].args[3], "/s/build-11.21");
+        assert_eq!(inv[9].env["PATH"], "/p");
     }
 
     #[test]
@@ -499,7 +521,7 @@ mod tests {
             fs::write(&p, b"ours").unwrap();
         }
         assert!(!is_installed(&app));
-        fs::write(stamp_path(&app), stamp_text(&[4, 4])).unwrap();
+        fs::write(stamp_path(&app), stamp_text(&[4; TARGETS.len()])).unwrap();
         assert!(is_installed(&app));
         // runtime ponovo instaliran: drugi ntdll.so
         fs::write(lib_dir(&app).join(TARGETS[0].1), b"gcenx build").unwrap();
