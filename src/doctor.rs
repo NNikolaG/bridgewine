@@ -3,8 +3,11 @@
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-use crate::recipe::WineSource;
+use crate::bottle;
+use crate::dxmt;
+use crate::recipe::{CefWorkaround, Graphics, Recipe, Store, WineSource};
 use crate::runtime;
+use crate::wine_build;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Status {
@@ -18,7 +21,7 @@ pub struct Check {
     pub name: &'static str,
     pub status: Status,
     pub detail: String,
-    pub fix: Option<&'static str>,
+    pub fix: Option<String>,
 }
 
 /// Rezultati sondiranja sistema; odvojeni od logike da bi se testirali na Linuxu.
@@ -142,9 +145,14 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         Some(m) if m >= 14 => (Ok, None),
         Some(_) => (
             Fail,
-            Some("GPTK i D3DMetal traze macOS 14 Sonoma ili noviji"),
+            Some(String::from(
+                "GPTK i D3DMetal traze macOS 14 Sonoma ili noviji",
+            )),
         ),
-        None => (Warn, Some("ne mogu da procitam verziju (sw_vers)")),
+        None => (
+            Warn,
+            Some(String::from("ne mogu da procitam verziju (sw_vers)")),
+        ),
     };
     v.push(Check {
         name: "macOS",
@@ -158,7 +166,8 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         name: "Apple Silicon",
         status: if apple { Ok } else { Warn },
         detail: p.arch.clone(),
-        fix: (!apple).then_some("BridgeWine cilja M-serija cipove; na Intel Macu D3DMetal ne radi"),
+        fix: (!apple)
+            .then(|| "BridgeWine cilja M-serija cipove; na Intel Macu D3DMetal ne radi".into()),
     });
     if apple {
         v.push(Check {
@@ -169,7 +178,7 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
             } else {
                 "nije instalirana".into()
             },
-            fix: (!p.rosetta).then_some("softwareupdate --install-rosetta --agree-to-license"),
+            fix: (!p.rosetta).then(|| "softwareupdate --install-rosetta --agree-to-license".into()),
         });
     }
     v.push(Check {
@@ -180,7 +189,7 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         } else {
             "nije instaliran".into()
         },
-        fix: (!p.xcode_clt).then_some("xcode-select --install"),
+        fix: (!p.xcode_clt).then(|| "xcode-select --install".into()),
     });
     v.push(Check {
         name: "Homebrew",
@@ -191,14 +200,16 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
             (false, true) => "x86_64 (/usr/local)".into(),
             (false, false) => "nije pronadjen".into(),
         },
-        fix: (!p.brew_arm && !p.brew_x86).then_some("https://brew.sh"),
+        fix: (!p.brew_arm && !p.brew_x86).then(|| "https://brew.sh".into()),
     });
     if p.brew_not_writable {
         v.push(Check {
             name: "Homebrew prava",
             status: Fail,
             detail: "/opt/homebrew nije upisiv za tvog korisnika".into(),
-            fix: Some("sudo chown -R $(whoami) /opt/homebrew  (nikad `sudo brew`)"),
+            fix: Some(String::from(
+                "sudo chown -R $(whoami) /opt/homebrew  (nikad `sudo brew`)",
+            )),
         });
     }
 
@@ -206,9 +217,9 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         name: "Wine (GPTK)",
         status: if p.gptk_wine.is_some() { Ok } else { Fail },
         detail: p.gptk_wine.clone().unwrap_or_else(|| "nije pronadjen".into()),
-        fix: p.gptk_wine.is_none().then_some(
-            "brew install --cask gcenx/wine/game-porting-toolkit, pa xattr -dr com.apple.quarantine \"/Applications/Game Porting Toolkit.app\" (docs/install-gptk.md); ili postavi BW_WINE",
-        ),
+        fix: p.gptk_wine.is_none().then(|| {
+            "brew install --cask gcenx/wine/game-porting-toolkit, pa xattr -dr com.apple.quarantine \"/Applications/Game Porting Toolkit.app\" (docs/install-gptk.md); ili postavi BW_WINE".into()
+        }),
     });
     v.push(Check {
         name: "Wine (WineHQ)",
@@ -217,7 +228,7 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
             .winehq_wine
             .clone()
             .unwrap_or_else(|| "nije instaliran (treba za recepte sa wine = \"winehq\")".into()),
-        fix: p.winehq_wine.is_none().then_some("bw runtime install"),
+        fix: p.winehq_wine.is_none().then(|| "bw runtime install".into()),
     });
     v.push(Check {
         name: "D3DMetal",
@@ -229,15 +240,226 @@ pub fn evaluate(p: &Probe) -> Vec<Check> {
         fix: p
             .d3dmetal
             .is_none()
-            .then_some("potreban samo za DX12 i recepte sa graphics = \"d3dmetal\""),
+            .then(|| "potreban samo za DX12 i recepte sa graphics = \"d3dmetal\"".into()),
     });
     v
 }
 
-pub fn run() -> ExitCode {
-    let checks = evaluate(&probe());
+/// Stanje jedne igre (runtime, bottle, Steam) za `bw doctor <igra>`.
+#[derive(Debug, Default)]
+pub struct GameProbe {
+    pub wine: Option<String>,
+    /// `com.apple.quarantine` na runtime-u (Gatekeeper ubija wine).
+    pub quarantined: bool,
+    pub patched_modules: bool,
+    pub dxmt_runtime: bool,
+    pub bottle: Option<String>,
+    pub reg_keys: usize,
+    pub dxmt_bottle: bool,
+    pub stale_dlls: Vec<String>,
+    pub steam: bool,
+    pub helper_wrapped: bool,
+    pub game_installed: bool,
+}
+
+fn quarantined(path: &Path) -> bool {
+    cmd_ok(
+        "xattr",
+        &["-p", "com.apple.quarantine", &path.display().to_string()],
+    )
+}
+
+pub fn probe_game(r: &Recipe) -> GameProbe {
+    let wine = find_wine_for(r.runtime.wine);
+    let app = wine.as_deref().and_then(wine_build::app_for);
+    let prefix = bottle::bottle_path(&bottle::home(), &r.game.id);
+    let has_bottle = bottle::bottle_exists(&prefix);
+    GameProbe {
+        quarantined: std::env::consts::OS == "macos"
+            && wine.as_deref().is_some_and(|w| quarantined(Path::new(w))),
+        patched_modules: app.as_deref().is_some_and(wine_build::is_installed),
+        dxmt_runtime: app
+            .as_deref()
+            .is_some_and(|a| dxmt::is_installed(a, dxmt::DXMT_VERSION)),
+        dxmt_bottle: has_bottle
+            && app
+                .as_deref()
+                .is_some_and(|a| dxmt::bottle_synced(a, &prefix)),
+        bottle: has_bottle.then(|| prefix.display().to_string()),
+        reg_keys: bottle::registry_keys(&prefix),
+        stale_dlls: bottle::stale_builtins(&prefix)
+            .into_iter()
+            .filter_map(|(_, p)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect(),
+        steam: bottle::steam_installed(&prefix),
+        helper_wrapped: bottle::steam_helper_wrapped(&prefix),
+        game_installed: r
+            .game
+            .steam_app_id
+            .is_some_and(|id| bottle::steam_game_installed(&prefix, id)),
+        wine,
+    }
+}
+
+fn check(name: &'static str, ok: bool, bad: Status, detail: String, fix: &str) -> Check {
+    Check {
+        name,
+        status: if ok { Status::Ok } else { bad },
+        detail,
+        fix: (!ok).then(|| fix.to_string()),
+    }
+}
+
+fn yes_no(ok: bool, yes: &str, no: &str) -> String {
+    if ok { yes } else { no }.to_string()
+}
+
+/// Sta igri fali. Sve sto je `FALI` resava `bw setup <igra>`; `upoz` popravi i `bw run`.
+pub fn evaluate_game(r: &Recipe, p: &GameProbe) -> Vec<Check> {
+    use Status::*;
+    let id = &r.game.id;
+    let setup = format!("bw setup {id}");
+    let run = format!("bw run {id} (radi to sam pri svakom startu)");
+    let mut v = Vec::new();
+    let wine_fix = match r.runtime.wine {
+        WineSource::Winehq => setup.clone(),
+        WineSource::Gptk => "bw doctor (Wine (GPTK))".into(),
+        WineSource::System => "postavi BW_WINE=<putanja do wine>".into(),
+    };
+    v.push(check(
+        "Wine",
+        p.wine.is_some(),
+        Fail,
+        p.wine.clone().unwrap_or_else(|| "nije pronadjen".into()),
+        &wine_fix,
+    ));
+    if p.wine.is_none() {
+        return v;
+    }
+    if p.quarantined {
+        v.push(Check {
+            name: "Karantin",
+            status: Fail,
+            detail: "runtime ima com.apple.quarantine (Gatekeeper ubija wine)".into(),
+            fix: Some(format!(
+                "xattr -dr com.apple.quarantine \"{}\"",
+                p.wine
+                    .as_deref()
+                    .and_then(wine_build::app_for)
+                    .map(|a| a.display().to_string())
+                    .unwrap_or_default()
+            )),
+        });
+    }
+    if r.runtime.patched {
+        v.push(check(
+            "Wine moduli",
+            p.patched_modules,
+            Fail,
+            yes_no(
+                p.patched_modules,
+                "BridgeWine patch-evi",
+                "nema nasih patch-eva",
+            ),
+            &setup,
+        ));
+    }
+    if r.runtime.graphics == Graphics::Dxmt {
+        v.push(check(
+            "DXMT",
+            p.dxmt_runtime,
+            Fail,
+            yes_no(
+                p.dxmt_runtime,
+                &format!("{} u runtime-u", dxmt::DXMT_VERSION),
+                "nije instaliran",
+            ),
+            &setup,
+        ));
+    }
+    let Some(prefix) = &p.bottle else {
+        v.push(check("Bottle", false, Fail, "ne postoji".into(), &setup));
+        return v;
+    };
+    let full = p.reg_keys >= bottle::MIN_REG_KEYS;
+    v.push(check(
+        "Bottle",
+        full,
+        Fail,
+        format!("{prefix} ({} kljuceva)", p.reg_keys),
+        &format!("bw bottle repair {id}"),
+    ));
+    if r.runtime.graphics == Graphics::Dxmt && p.dxmt_runtime {
+        v.push(check(
+            "DXMT u bottle-u",
+            p.dxmt_bottle,
+            Warn,
+            yes_no(
+                p.dxmt_bottle,
+                "system32/syswow64 ok",
+                "DLL-ovi fale ili su stari",
+            ),
+            &run,
+        ));
+    }
+    if r.runtime.wine == WineSource::Winehq {
+        v.push(check(
+            "GPTK ostaci",
+            p.stale_dlls.is_empty(),
+            Warn,
+            if p.stale_dlls.is_empty() {
+                "nema".into()
+            } else {
+                p.stale_dlls.join(", ")
+            },
+            &run,
+        ));
+    }
+    if r.game.store != Store::Steam {
+        return v;
+    }
+    v.push(check(
+        "Steam",
+        p.steam,
+        Fail,
+        yes_no(p.steam, "instaliran", "nije instaliran"),
+        &setup,
+    ));
+    if !p.steam {
+        return v;
+    }
+    if r.steam.cef_workaround == CefWorkaround::Wine {
+        v.push(check(
+            "steamwebhelper",
+            !p.helper_wrapped,
+            Warn,
+            yes_no(
+                !p.helper_wrapped,
+                "original (crta ga nas Wine patch)",
+                "stari bw wrapper (`bw run` vraca original)",
+            ),
+            &run,
+        ));
+    }
+    if let Some(app) = r.game.steam_app_id {
+        v.push(check(
+            "Igra",
+            p.game_installed,
+            Warn,
+            yes_no(
+                p.game_installed,
+                &format!("instalirana (Steam {app})"),
+                "nije instalirana",
+            ),
+            &format!("bw run {id}, pa Install u Steam-u"),
+        ));
+    }
+    v
+}
+
+fn print(checks: &[Check]) -> bool {
     let mut failed = false;
-    for c in &checks {
+    for c in checks {
         let tag = match c.status {
             Status::Ok => "ok  ",
             Status::Warn => "upoz",
@@ -246,10 +468,20 @@ pub fn run() -> ExitCode {
                 "FALI"
             }
         };
-        println!("[{tag}] {:<14} {}", c.name, c.detail);
-        if let Some(fix) = c.fix {
+        println!("[{tag}] {:<15} {}", c.name, c.detail);
+        if let Some(fix) = &c.fix {
             println!("       -> {fix}");
         }
+    }
+    failed
+}
+
+/// `bw doctor [igra]`: Mac, pa (ako je data igra) runtime, bottle i Steam za nju.
+pub fn run(game: Option<&Recipe>) -> ExitCode {
+    let mut failed = print(&evaluate(&probe()));
+    if let Some(r) = game {
+        println!("\n{} ({})", r.game.name, r.game.id);
+        failed |= print(&evaluate_game(r, &probe_game(r)));
     }
     if failed {
         println!("\nNeke stvari fale. Popravi ih pa pokreni `bw doctor` ponovo.");
@@ -298,7 +530,7 @@ mod tests {
         });
         let r = c.iter().find(|c| c.name == "Rosetta 2").unwrap();
         assert_eq!(r.status, Status::Fail);
-        assert!(r.fix.unwrap().contains("install-rosetta"));
+        assert!(r.fix.as_deref().unwrap().contains("install-rosetta"));
     }
 
     #[test]
@@ -339,5 +571,93 @@ mod tests {
         });
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].status, Status::Fail);
+    }
+
+    fn aoe3() -> Recipe {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("recipes/aoe3-de.toml");
+        crate::recipe::load_file(&p).unwrap()
+    }
+
+    fn aoe3_ready() -> GameProbe {
+        GameProbe {
+            wine: Some("/h/runtimes/wine-devel-11.21.app/Contents/Resources/wine/bin/wine".into()),
+            patched_modules: true,
+            dxmt_runtime: true,
+            bottle: Some("/h/bottles/aoe3-de".into()),
+            reg_keys: 5000,
+            dxmt_bottle: true,
+            steam: true,
+            helper_wrapped: false,
+            game_installed: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ready_aoe3_is_all_ok() {
+        let c = evaluate_game(&aoe3(), &aoe3_ready());
+        assert!(c.iter().all(|c| c.status == Status::Ok), "{c:?}");
+        let names: Vec<_> = c.iter().map(|c| c.name).collect();
+        assert_eq!(
+            names,
+            [
+                "Wine",
+                "Wine moduli",
+                "DXMT",
+                "Bottle",
+                "DXMT u bottle-u",
+                "GPTK ostaci",
+                "Steam",
+                "steamwebhelper",
+                "Igra"
+            ]
+        );
+    }
+
+    #[test]
+    fn fresh_mac_points_to_setup() {
+        let c = evaluate_game(&aoe3(), &GameProbe::default());
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].status, Status::Fail);
+        assert_eq!(c[0].fix.as_deref(), Some("bw setup aoe3-de"));
+    }
+
+    #[test]
+    fn missing_pieces_fail_or_warn() {
+        let p = GameProbe {
+            quarantined: true,
+            patched_modules: false,
+            stale_dlls: vec!["atidxx64.dll".into()],
+            helper_wrapped: true,
+            game_installed: false,
+            ..aoe3_ready()
+        };
+        let c = evaluate_game(&aoe3(), &p);
+        assert_eq!(status(&c, "Karantin"), Status::Fail);
+        assert!(c
+            .iter()
+            .find(|c| c.name == "Karantin")
+            .unwrap()
+            .fix
+            .as_deref()
+            .unwrap()
+            .contains("xattr -dr com.apple.quarantine \"/h/runtimes/wine-devel-11.21.app\""));
+        assert_eq!(status(&c, "Wine moduli"), Status::Fail);
+        assert_eq!(status(&c, "GPTK ostaci"), Status::Warn);
+        assert_eq!(status(&c, "steamwebhelper"), Status::Warn);
+        assert_eq!(status(&c, "Igra"), Status::Warn);
+    }
+
+    #[test]
+    fn no_bottle_stops_before_steam() {
+        let c = evaluate_game(
+            &aoe3(),
+            &GameProbe {
+                bottle: None,
+                ..aoe3_ready()
+            },
+        );
+        assert_eq!(status(&c, "Bottle"), Status::Fail);
+        assert!(c.iter().all(|c| c.name != "Steam"));
     }
 }

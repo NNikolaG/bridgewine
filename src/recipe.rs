@@ -20,6 +20,8 @@ pub struct Recipe {
     #[serde(default)]
     pub winetricks: Winetricks,
     #[serde(default)]
+    pub steam: SteamOpts,
+    #[serde(default)]
     pub known_issues: BTreeMap<String, String>,
     #[serde(default)]
     pub tested: Tested,
@@ -52,6 +54,30 @@ pub struct Runtime {
     pub directx: u8,
     #[serde(default = "default_windows_version")]
     pub windows_version: String,
+    /// Igra trazi nase Wine module (`patches/`: direktni syscall-ovi, GLOBALROOT,
+    /// Rosetta CPU frekvencija). `bw setup` ih skida sa release-a ili gradi.
+    #[serde(default)]
+    pub patched: bool,
+}
+
+/// Kako Steam-ov CEF (steamwebhelper) dobija sliku na macOS-u.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SteamOpts {
+    #[serde(default)]
+    pub cef_workaround: CefWorkaround,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum CefWorkaround {
+    /// Nas kernelbase patch (0004) pokrece helper sa `--disable-gpu --single-process`
+    /// (Wine bug 56014). Treba `patched = true`. `"wrapper"` je staro ime.
+    #[default]
+    #[serde(alias = "wrapper")]
+    Wine,
+    /// Bez zaobilazenja (npr. kad Wine sam ispravno prikazuje CEF).
+    None,
 }
 
 fn default_windows_version() -> String {
@@ -176,6 +202,9 @@ impl Recipe {
                 rt.graphics, rt.directx
             ));
         }
+        if rt.patched && rt.wine != WineSource::Winehq {
+            errs.push("patched = true zahteva wine = \"winehq\"".into());
+        }
         if rt.graphics == Graphics::D3dmetal && rt.wine != WineSource::Gptk {
             errs.push("d3dmetal zahteva wine = \"gptk\"".into());
         }
@@ -289,6 +318,12 @@ pub fn cmd_show(dir: &Path, id: &str) -> ExitCode {
                 r.runtime.graphics, r.runtime.directx
             );
             println!("  Windows:       {}", r.runtime.windows_version);
+            if r.runtime.patched {
+                println!("  Wine moduli:   BridgeWine patch-evi (patches/)");
+            }
+            if r.game.store == Store::Steam {
+                println!("  Steam CEF:     {:?}", r.steam.cef_workaround);
+            }
             for (k, v) in &r.env {
                 println!("  env {k}={v}");
             }
@@ -427,6 +462,28 @@ d3d11 = "native,builtin"
         assert!(
             Recipe::parse(&GOOD.replace("directx = 11", "directx = 11\nengine = \"x\"")).is_err()
         );
+    }
+
+    #[test]
+    fn steam_cef_workaround_defaults_to_wine() {
+        let r = Recipe::parse(GOOD).unwrap();
+        assert_eq!(r.steam.cef_workaround, CefWorkaround::Wine);
+        assert!(!r.runtime.patched);
+        let r = Recipe::parse(&format!("{GOOD}\n[steam]\ncef_workaround = \"none\"\n")).unwrap();
+        assert_eq!(r.steam.cef_workaround, CefWorkaround::None);
+        let r = Recipe::parse(&format!("{GOOD}\n[steam]\ncef_workaround = \"wrapper\"\n")).unwrap();
+        assert_eq!(r.steam.cef_workaround, CefWorkaround::Wine);
+    }
+
+    #[test]
+    fn patched_needs_winehq() {
+        let r =
+            Recipe::parse(&GOOD.replace("directx = 11", "directx = 11\npatched = true")).unwrap();
+        assert!(r.validate("aoe3-de").iter().any(|e| e.contains("patched")));
+        let ok = GOOD
+            .replace("wine = \"gptk\"", "wine = \"winehq\"")
+            .replace("directx = 11", "directx = 11\npatched = true");
+        assert!(Recipe::parse(&ok).unwrap().validate("aoe3-de").is_empty());
     }
 
     #[test]
