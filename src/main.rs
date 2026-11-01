@@ -6,6 +6,7 @@ mod dxmt;
 mod dxvk;
 mod recipe;
 mod runtime;
+mod setup;
 mod wine_build;
 
 use std::path::PathBuf;
@@ -30,8 +31,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Proveri da li Mac ima sve sto treba
-    Doctor,
+    /// Proveri da li Mac ima sve sto treba (sa igrom: i runtime, bottle, Steam)
+    Doctor { game: Option<String> },
+    /// Pripremi sve za igru jednom komandom (runtime, moduli, grafika, bottle, Steam)
+    Setup {
+        game: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Rad sa receptima igara
     Recipe {
         #[command(subcommand)]
@@ -107,7 +114,17 @@ enum RuntimeAction {
     BuildPatched {
         #[arg(long)]
         dry_run: bool,
+        /// Samo spakuj module u ovaj folder (za release u CI-ju), bez runtime-a
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
+    /// Skini gotove nase Wine module sa GitHub release-a (bez kompajliranja)
+    InstallPatched {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Ispisi tag release-a za trenutne patch-eve (koristi CI)
+    PatchedTag,
 }
 
 #[derive(Subcommand)]
@@ -125,7 +142,11 @@ fn main() -> ExitCode {
     let dir = recipe::recipes_dir(cli.recipes);
 
     match cli.command {
-        Command::Doctor => doctor::run(),
+        Command::Doctor { game: None } => doctor::run(None),
+        Command::Doctor { game: Some(game) } => with_recipe(&dir, &game, |r| doctor::run(Some(r))),
+        Command::Setup { game, dry_run } => {
+            with_recipe(&dir, &game, |r| setup::cmd_setup(r, dry_run))
+        }
         Command::Recipe { action } => match action {
             RecipeAction::List => recipe::cmd_list(&dir),
             RecipeAction::Show { id } => recipe::cmd_show(&dir, &id),
@@ -147,8 +168,17 @@ fn main() -> ExitCode {
             action: RuntimeAction::Install { dry_run },
         } => runtime::cmd_install(dry_run),
         Command::Runtime {
-            action: RuntimeAction::BuildPatched { dry_run },
-        } => wine_build::cmd_build(dry_run),
+            action: RuntimeAction::BuildPatched { dry_run, out },
+        } => wine_build::cmd_build(dry_run, out),
+        Command::Runtime {
+            action: RuntimeAction::InstallPatched { dry_run },
+        } => wine_build::cmd_install_prebuilt(dry_run),
+        Command::Runtime {
+            action: RuntimeAction::PatchedTag,
+        } => {
+            println!("{}", wine_build::release_tag(runtime::WINEHQ_VERSION));
+            ExitCode::SUCCESS
+        }
         Command::Run {
             game,
             graphics,

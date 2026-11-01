@@ -1,0 +1,119 @@
+Subject: [PATCH] winecoreaudio: Keep the audio timer on time under Rosetta 2.
+
+The audio_client_timer thread signals the client once per period. As a
+normal thread it is woken late under load on Apple Silicon, the client
+(e.g. the DirectSound mixer) misses its refill and the AudioUnit plays
+silence, heard as crackling in AoE3 DE. Give the thread a Mach
+time-constraint policy, convert the HAL buffer frame size between client
+and device rates, and add WINECOREAUDIO_PERIOD_MS as an optional floor for
+the default period.
+---
+diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
+index 163faff..3cbf980 100644
+--- a/dlls/winecoreaudio.drv/coreaudio.c
++++ b/dlls/winecoreaudio.drv/coreaudio.c
+@@ -42,6 +42,9 @@
+ #include <fcntl.h>
+ #include <fenv.h>
+ #include <unistd.h>
++#include <mach/mach.h>
++#include <mach/mach_time.h>
++#include <mach/thread_policy.h>
+ 
+ #include <CoreAudio/CoreAudio.h>
+ #include <AudioToolbox/AudioFormat.h>
+@@ -129,6 +132,20 @@ static struct coreaudio_stream *handle_get_stream(stream_handle h)
+     return (struct coreaudio_stream *)(UINT_PTR)h;
+ }
+ 
++/* WINECOREAUDIO_PERIOD_MS (1..500, unset = upstream): floor for the default
++ * device period, so DirectSound and other shared-mode clients get larger
++ * fragments and more headroom against scheduling jitter under Rosetta 2. */
++static REFERENCE_TIME env_period_floor(void)
++{
++    const char *str = getenv("WINECOREAUDIO_PERIOD_MS");
++    long ms;
++
++    if (!str || !*str) return 0;
++    ms = strtol(str, NULL, 10);
++    if (ms <= 0 || ms > 500) return 0;
++    return (REFERENCE_TIME)ms * 10000;
++}
++
+ /* copied from kernelbase */
+ static int muldiv( int a, int b, int c )
+ {
+@@ -1242,7 +1259,7 @@ static HRESULT get_device_sample_rate(AudioDeviceID dev_id, EDataFlow flow,
+ static NTSTATUS unix_create_stream(void *args)
+ {
+     struct create_stream_params *params = args;
+-    unsigned int min_period_frames, max_period_frames;
++    unsigned int min_period_frames, max_period_frames, dev_rate, dev_period_frames;
+     struct coreaudio_stream *stream;
+     AURenderCallbackStruct input;
+     OSStatus sc;
+@@ -1278,9 +1295,15 @@ static NTSTATUS unix_create_stream(void *args)
+                                                               &max_period_frames)))
+         goto end;
+ 
+-    stream->period_frames = max(min_period_frames, min(stream->period_frames, max_period_frames));
+-    stream->period = muldiv(stream->period_frames, 10000000, stream->fmt->nSamplesPerSec);
+-    if (FAILED(params->result = set_device_period_frame_size(stream->dev_id, stream->flow, stream->period_frames)))
++    /* kAudioDevicePropertyBufferFrameSize(Range) counts device-rate frames,
++     * period_frames counts client-rate frames; convert between them. */
++    if (FAILED(get_device_sample_rate(stream->dev_id, stream->flow, &dev_rate)) || !dev_rate)
++        dev_rate = stream->fmt->nSamplesPerSec;
++    dev_period_frames = muldiv(stream->period_frames, dev_rate, stream->fmt->nSamplesPerSec);
++    dev_period_frames = max(min_period_frames, min(dev_period_frames, max_period_frames));
++    stream->period_frames = max(1, muldiv(dev_period_frames, stream->fmt->nSamplesPerSec, dev_rate));
++    stream->period = muldiv(dev_period_frames, 10000000, dev_rate);
++    if (FAILED(params->result = set_device_period_frame_size(stream->dev_id, stream->flow, dev_period_frames)))
+         goto end;
+ 
+     stream->bufsize_frames = muldiv(params->duration, stream->fmt->nSamplesPerSec, 10000000);
+@@ -1464,6 +1487,7 @@ static NTSTATUS unix_get_device_period(void *args)
+             return STATUS_SUCCESS;
+ 
+         *params->def_period = muldiv(period_frames, 10000000, n_samples_per_sec);
++        *params->def_period = max(*params->def_period, env_period_floor());
+     }
+ 
+     if (params->min_period)
+@@ -1703,12 +1727,37 @@ static NTSTATUS unix_get_current_padding(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
++/* The timer wakes the client (e.g. the DirectSound mixer) once per period.
++ * A plain thread is woken late under load, especially under Rosetta 2, and
++ * the AudioUnit then plays silence. Ask the Mach scheduler for a real-time
++ * slot of half a period every period, like CoreAudio's own I/O threads. */
++static void set_timer_thread_realtime(REFERENCE_TIME period)
++{
++    struct thread_time_constraint_policy policy;
++    mach_timebase_info_data_t tb;
++    uint64_t period_abs;
++    kern_return_t kr;
++
++    if (mach_timebase_info(&tb) != KERN_SUCCESS || !tb.numer) return;
++    period_abs = (uint64_t)period * 100 * tb.denom / tb.numer; /* 100ns -> abs */
++    policy.period = period_abs;
++    policy.computation = period_abs / 2;
++    policy.constraint = period_abs;
++    policy.preemptible = TRUE;
++    kr = thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY,
++                           (thread_policy_t)&policy, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
++    if (kr != KERN_SUCCESS)
++        WARN("thread_policy_set failed: %d\n", kr);
++}
++
+ static void unix_timer_loop(void *args)
+ {
+     struct coreaudio_stream *stream = args;
+     LARGE_INTEGER delay, next, last;
+     int adjust;
+ 
++    set_timer_thread_realtime(stream->period);
++
+     delay.QuadPart = -stream->period;
+     NtQueryPerformanceCounter(&last, NULL);
+     next.QuadPart = last.QuadPart + stream->period;

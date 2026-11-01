@@ -16,10 +16,20 @@ wine = "winehq"          # gptk | winehq | system
 graphics = "dxmt"        # d3dmetal | dxmt | dxvk | wined3d
 directx = 11
 windows_version = "win10"
+# Nasi Wine moduli (patches/): direktni syscall-ovi (zastita igre), \\.\GLOBALROOT,
+# Rosetta CPU frekvencija, zvuk (dsound red, audio tajmer). `bw setup` ih skida sa GitHub release-a ili gradi.
+patched = true
+
+[steam]
+# Crn Steam prozor (Wine bug 56014): nas steamwebhelper wrapper. "none" kad Wine to sam resi.
+cef_workaround = "wrapper"
 
 [env]
 WINEMSYNC = "1"
 MTL_HUD_ENABLED = "0"    # 1 za Metal HUD sa FPS-om
+# Zvuk ide preko DirectSound-a; nas dsound patch drzi 80 ms u redu umesto ~40 ms,
+# pa zakasnelo budjenje miksera pod Rosettom ne pravi rupe (krckanje).
+WINEDSOUND_QUEUE_MS = "80"
 
 [known_issues]
 menu_text = "DXMT i D3DMetal crtaju naslove i dugmad u meniju samo delimicno (Metal); DXVK ih crta ispravno: `bw run aoe3-de --graphics dxvk`"

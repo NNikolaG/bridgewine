@@ -94,6 +94,20 @@ fn bottle_dir(arch: &str) -> Option<&'static str> {
     }
 }
 
+/// Da li bottle ima iste DXMT PE DLL-ove kao runtime (`bw run` ih sam kopira).
+pub fn bottle_synced(app: &Path, prefix: &Path) -> bool {
+    FILES.iter().all(|(dir, name)| {
+        let Some(sys) = bottle_dir(dir) else {
+            return true;
+        };
+        let dst = prefix.join("drive_c/windows").join(sys).join(name);
+        matches!(
+            (fs::read(lib_dir(app).join(dir).join(name)), fs::read(dst)),
+            (Ok(a), Ok(b)) if a == b
+        )
+    })
+}
+
 /// Kopira DXMT PE DLL-ove iz runtime-a u bottle gde se razlikuju.
 pub fn sync_bottle(app: &Path, prefix: &Path) -> Result<(), String> {
     for (dir, name) in FILES {
