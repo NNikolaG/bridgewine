@@ -316,6 +316,51 @@ fn prep_steam(prefix: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Builtin DLL starog Wine ABI-ja: uvozi `ntdll.__wine_unix_call`, koji WineHQ 9+ vise
+/// ne izvozi (sada `__wine_unix_call_dispatcher`). Takve ostavi GPTK (D3DMetal-ov
+/// `atidxx64.dll`, `nvapi64.dll`, `nvngx.dll`...) kad bottle predje na WineHQ;
+/// AMD AGS u igri ucita `atidxx64.dll` i proces pukne ("unimplemented function
+/// ntdll.dll.__wine_unix_call").
+pub fn is_stale_builtin(pe: &[u8]) -> bool {
+    fn has(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+    pe.starts_with(b"MZ") && has(pe, b"Wine builtin DLL") && has(pe, b"__wine_unix_call\0")
+}
+
+/// Sklanja zastarele builtin DLL-ove iz system32/syswow64 u `<bottle>/bw-stale-dlls/`.
+pub fn quarantine_stale_builtins(prefix: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut moved = Vec::new();
+    for sub in ["system32", "syswow64"] {
+        let dir = prefix.join("drive_c").join("windows").join(sub);
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            let is_dll = path
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("dll"));
+            if !is_dll || !fs::read(&path).is_ok_and(|b| is_stale_builtin(&b)) {
+                continue;
+            }
+            let dest_dir = prefix.join("bw-stale-dlls").join(sub);
+            fs::create_dir_all(&dest_dir).map_err(|e| format!("{}: {e}", dest_dir.display()))?;
+            let dest = dest_dir.join(e.file_name());
+            fs::rename(&path, &dest).map_err(|e| format!("{}: {e}", path.display()))?;
+            moved.push(dest);
+        }
+    }
+    Ok(moved)
+}
+
+fn prep_winehq(prefix: &Path) -> Result<(), String> {
+    for p in quarantine_stale_builtins(prefix)? {
+        println!("sklonjen zastareli GPTK DLL: {}", p.display());
+    }
+    Ok(())
+}
+
 fn prep_session(wine: &str, prefix: &Path, dry_run: bool) -> Result<(), String> {
     run_all(&session_prep_invocations(wine, prefix), dry_run)
 }
@@ -489,6 +534,9 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
             );
         }
         let inv = run_invocation(&wine, &prefix, recipe)?;
+        if recipe.runtime.wine == WineSource::Winehq && !dry_run {
+            prep_winehq(&prefix)?;
+        }
         if recipe.game.store == Store::Steam && !dry_run {
             prep_steam(&prefix)?;
         }
@@ -712,6 +760,29 @@ dxgi = "native,builtin"
         assert!(wrap_steam_helper(&dir).unwrap());
         assert_eq!(fs::read(cef.join(HELPER)).unwrap(), HELPER_WRAPPER);
         assert_eq!(fs::read(cef.join(HELPER_REAL)).unwrap(), b"orig2");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn quarantines_only_old_abi_builtins() {
+        let dir = std::env::temp_dir().join(format!("bw-stale-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let sys = dir.join("drive_c/windows/system32");
+        fs::create_dir_all(&sys).unwrap();
+        let old = b"MZ..Wine builtin DLL..ntdll.dll\0__wine_unix_call\0..";
+        let new = b"MZ..Wine builtin DLL..ntdll.dll\0__wine_unix_call_dispatcher\0";
+        fs::write(sys.join("atidxx64.dll"), old).unwrap();
+        fs::write(sys.join("d3d11.dll"), new).unwrap();
+        fs::write(sys.join("game.dll"), b"MZ native __wine_unix_call\0").unwrap();
+        assert!(is_stale_builtin(old));
+        assert!(!is_stale_builtin(new));
+
+        let moved = quarantine_stale_builtins(&dir).unwrap();
+        assert_eq!(moved, [dir.join("bw-stale-dlls/system32/atidxx64.dll")]);
+        assert!(!sys.join("atidxx64.dll").exists());
+        assert!(sys.join("d3d11.dll").exists());
+        assert!(sys.join("game.dll").exists());
+        assert!(quarantine_stale_builtins(&dir).unwrap().is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 
