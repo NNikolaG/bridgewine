@@ -2,8 +2,9 @@
 //!
 //! wined3d preko macOS OpenGL 4.1 ne nudi D3D11 feature level 11, pa AoE3 DE javi
 //! "Your video hardware does not support DirectX 11". DXMT-ov "builtin" release
-//! ide u runtime (`lib/wine/<arch>/`), jer Wine builtin DLL iz system32 svejedno
-//! ucitava iz lib foldera. Wine-ovi originali ostaju pored kao `*.orig`.
+//! ide u runtime (`lib/wine/<arch>/`, Wine-ovi originali ostaju kao `*.orig`), a
+//! PE DLL-ovi i u system32/syswow64 bottle-a: bez `winemetal.dll` tamo Wine ne
+//! nalazi import DXMT-ovog dxgi.dll i Steam-ov CEF pada na int3.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -82,6 +83,35 @@ pub fn install_files(unpacked: &Path, app: &Path, version: &str) -> Result<(), S
     }
     let sizes = installed_sizes(app).ok_or("DXMT fajl nedostaje posle instalacije")?;
     fs::write(stamp_path(app), stamp_text(version, &sizes)).map_err(|e| err(&stamp_path(app), e))
+}
+
+/// Runtime folder -> folder bottle-a za iste PE DLL-ove.
+fn bottle_dir(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64-windows" => Some("system32"),
+        "i386-windows" => Some("syswow64"),
+        _ => None,
+    }
+}
+
+/// Kopira DXMT PE DLL-ove iz runtime-a u bottle gde se razlikuju.
+pub fn sync_bottle(app: &Path, prefix: &Path) -> Result<(), String> {
+    for (dir, name) in FILES {
+        let Some(sys) = bottle_dir(dir) else {
+            continue;
+        };
+        let src = lib_dir(app).join(dir).join(name);
+        let dst = prefix.join("drive_c/windows").join(sys).join(name);
+        let want = fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+        if fs::read(&dst).is_ok_and(|have| have == want) {
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&dst, want).map_err(|e| format!("{}: {e}", dst.display()))?;
+    }
+    Ok(())
 }
 
 fn inv(program: &str, args: &[String]) -> Invocation {
@@ -179,5 +209,33 @@ mod tests {
         assert_eq!(fs::read_to_string(&orig).unwrap(), "wine d3d11");
         fs::remove_dir_all(&rel).unwrap();
         fs::remove_dir_all(&app).unwrap();
+    }
+
+    #[test]
+    fn copies_pe_dlls_into_bottle() {
+        let app = tmp("sync-app");
+        let prefix = tmp("sync-bottle");
+        for (dir, name) in FILES {
+            fs::create_dir_all(lib_dir(&app).join(dir)).unwrap();
+            fs::write(lib_dir(&app).join(dir).join(name), format!("{dir} {name}")).unwrap();
+        }
+        let sys32 = prefix.join("drive_c/windows/system32");
+        fs::create_dir_all(&sys32).unwrap();
+        fs::write(sys32.join("dxgi.dll"), "wine dxgi").unwrap();
+
+        sync_bottle(&app, &prefix).unwrap();
+        assert_eq!(
+            fs::read_to_string(sys32.join("winemetal.dll")).unwrap(),
+            "x86_64-windows winemetal.dll"
+        );
+        assert_eq!(
+            fs::read_to_string(sys32.join("dxgi.dll")).unwrap(),
+            "x86_64-windows dxgi.dll"
+        );
+        let wow = prefix.join("drive_c/windows/syswow64/d3d11.dll");
+        assert_eq!(fs::read_to_string(wow).unwrap(), "i386-windows d3d11.dll");
+        assert!(!sys32.join("winemetal.so").exists());
+        fs::remove_dir_all(&app).unwrap();
+        fs::remove_dir_all(&prefix).unwrap();
     }
 }

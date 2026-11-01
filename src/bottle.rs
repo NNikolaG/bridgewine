@@ -556,6 +556,9 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
         if recipe.runtime.graphics == Graphics::Dxmt {
             let app = wine_build::app_for(&wine).ok_or("ne znam gde je Wine runtime")?;
             dxmt::ensure(&app, dry_run)?;
+            if !dry_run {
+                dxmt::sync_bottle(&app, &prefix)?;
+            }
         }
         if recipe.runtime.graphics == Graphics::Dxvk {
             eprintln!(
