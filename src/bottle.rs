@@ -307,7 +307,10 @@ fn prep_steam(prefix: &Path) -> Result<(), String> {
     }
     clear_cef_locks(prefix);
     let reg = prefix.join("user.reg");
-    if let Some(t) = fs::read_to_string(&reg).ok().and_then(|t| strip_steam_autostart(&t)) {
+    if let Some(t) = fs::read_to_string(&reg)
+        .ok()
+        .and_then(|t| strip_steam_autostart(&t))
+    {
         fs::write(&reg, t).map_err(|e| format!("{}: {e}", reg.display()))?;
     }
     Ok(())
