@@ -5,6 +5,7 @@ mod doctor;
 mod dxmt;
 mod recipe;
 mod runtime;
+mod setup;
 mod wine_build;
 
 use std::path::PathBuf;
@@ -29,8 +30,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Proveri da li Mac ima sve sto treba
-    Doctor,
+    /// Proveri da li Mac ima sve sto treba (sa igrom: i runtime, bottle, Steam)
+    Doctor { game: Option<String> },
+    /// Pripremi sve za igru jednom komandom (runtime, moduli, grafika, bottle, Steam)
+    Setup {
+        game: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Rad sa receptima igara
     Recipe {
         #[command(subcommand)]
@@ -131,7 +138,11 @@ fn main() -> ExitCode {
     let dir = recipe::recipes_dir(cli.recipes);
 
     match cli.command {
-        Command::Doctor => doctor::run(),
+        Command::Doctor { game: None } => doctor::run(None),
+        Command::Doctor { game: Some(game) } => with_recipe(&dir, &game, |r| doctor::run(Some(r))),
+        Command::Setup { game, dry_run } => {
+            with_recipe(&dir, &game, |r| setup::cmd_setup(r, dry_run))
+        }
         Command::Recipe { action } => match action {
             RecipeAction::List => recipe::cmd_list(&dir),
             RecipeAction::Show { id } => recipe::cmd_show(&dir, &id),

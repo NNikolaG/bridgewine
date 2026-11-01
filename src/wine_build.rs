@@ -296,54 +296,56 @@ fn runtime_app(home: &Path, version: &str) -> PathBuf {
 
 /// Gradi module; sa `out` ih samo spakuje u folder (CI), bez runtime-a.
 pub fn cmd_build(dry_run: bool, out: Option<PathBuf>) -> ExitCode {
-    finish((|| {
-        let home = home();
-        let version = WINEHQ_VERSION;
-        let app = runtime_app(&home, version);
-        if !dry_run && out.is_none() && !app.exists() {
-            return Err("WineHQ nije instaliran; prvo `bw runtime install`".to_string());
+    finish(build(dry_run, out))
+}
+
+pub fn build(dry_run: bool, out: Option<PathBuf>) -> Result<(), String> {
+    let home = home();
+    let version = WINEHQ_VERSION;
+    let app = runtime_app(&home, version);
+    if !dry_run && out.is_none() && !app.exists() {
+        return Err("WineHQ nije instaliran; prvo `bw runtime install`".to_string());
+    }
+    let src = home.join("src");
+    let tarball = home.join("cache").join(format!("wine-{version}.tar.xz"));
+    let patches = src.join(format!("patches-{version}"));
+    if !dry_run {
+        fs::create_dir_all(&patches).map_err(|e| e.to_string())?;
+        fs::create_dir_all(home.join("cache")).map_err(|e| e.to_string())?;
+        for (name, text) in PATCHES {
+            fs::write(patches.join(name), text).map_err(|e| e.to_string())?;
         }
-        let src = home.join("src");
-        let tarball = home.join("cache").join(format!("wine-{version}.tar.xz"));
-        let patches = src.join(format!("patches-{version}"));
-        if !dry_run {
-            fs::create_dir_all(&patches).map_err(|e| e.to_string())?;
-            fs::create_dir_all(home.join("cache")).map_err(|e| e.to_string())?;
-            for (name, text) in PATCHES {
-                fs::write(patches.join(name), text).map_err(|e| e.to_string())?;
-            }
-        }
-        if !tarball.exists() {
-            run_all(
-                &download_invocations(&source_url(version), &tarball),
-                dry_run,
-            )?;
-        }
-        let path = format!(
-            "/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:{}",
-            std::env::var("PATH").unwrap_or_default()
-        );
-        run_all(&build_invocations(&src, &tarball, version, &path), dry_run)?;
-        if dry_run {
-            return Ok(());
-        }
-        let build = src.join(format!("build-{version}"));
-        if let Some(out) = out {
-            export(&build, &out, version)?;
-            println!(
-                "moduli za release {} u {}",
-                release_tag(version),
-                out.display()
-            );
-            return Ok(());
-        }
-        install_from(|b, _| build.join(b), &app, true)?;
+    }
+    if !tarball.exists() {
+        run_all(
+            &download_invocations(&source_url(version), &tarball),
+            dry_run,
+        )?;
+    }
+    let path = format!(
+        "/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:{}",
+        std::env::var("PATH").unwrap_or_default()
+    );
+    run_all(&build_invocations(&src, &tarball, version, &path), dry_run)?;
+    if dry_run {
+        return Ok(());
+    }
+    let build = src.join(format!("build-{version}"));
+    if let Some(out) = out {
+        export(&build, &out, version)?;
         println!(
-            "Wine moduli sa BridgeWine patch-evima instalirani u {}",
-            app.display()
+            "moduli za release {} u {}",
+            release_tag(version),
+            out.display()
         );
-        Ok(())
-    })())
+        return Ok(());
+    }
+    install_from(|b, _| build.join(b), &app, true)?;
+    println!(
+        "Wine moduli sa BridgeWine patch-evima instalirani u {}",
+        app.display()
+    );
+    Ok(())
 }
 
 /// curl -> raspakuj u privremeni folder (bez kompajliranja na Mac-u).
@@ -369,42 +371,44 @@ pub fn fetch_invocations(home: &Path, version: &str) -> (Vec<Invocation>, PathBu
 
 /// Skini gotove module sa GitHub release-a i ubaci ih u runtime.
 pub fn cmd_install_prebuilt(dry_run: bool) -> ExitCode {
-    finish((|| {
-        let home = home();
-        let version = WINEHQ_VERSION;
-        let app = runtime_app(&home, version);
-        if !dry_run && !app.exists() {
-            return Err("WineHQ nije instaliran; prvo `bw runtime install`".to_string());
-        }
-        if !dry_run && is_installed(&app) {
-            println!(
-                "BridgeWine Wine moduli ({}) vec instalirani",
-                release_tag(version)
-            );
-            return Ok(());
-        }
-        if !dry_run {
-            fs::create_dir_all(home.join("cache")).map_err(|e| e.to_string())?;
-        }
-        let (steps, staging) = fetch_invocations(&home, version);
-        run_all(&steps, dry_run).map_err(|e| {
-            format!(
-                "{e}\nnema gotovih modula za {}; napravi ih sam: `bw runtime build-patched`",
-                release_tag(version)
-            )
-        })?;
-        if dry_run {
-            return Ok(());
-        }
-        install_from(|_, lib| staging.join(lib), &app, false)?;
-        let _ = fs::remove_dir_all(&staging);
+    finish(install_prebuilt(dry_run))
+}
+
+pub fn install_prebuilt(dry_run: bool) -> Result<(), String> {
+    let home = home();
+    let version = WINEHQ_VERSION;
+    let app = runtime_app(&home, version);
+    if !dry_run && !app.exists() {
+        return Err("WineHQ nije instaliran; prvo `bw runtime install`".to_string());
+    }
+    if !dry_run && is_installed(&app) {
         println!(
-            "Wine moduli {} instalirani u {}",
-            release_tag(version),
-            app.display()
+            "BridgeWine Wine moduli ({}) vec instalirani",
+            release_tag(version)
         );
-        Ok(())
-    })())
+        return Ok(());
+    }
+    if !dry_run {
+        fs::create_dir_all(home.join("cache")).map_err(|e| e.to_string())?;
+    }
+    let (steps, staging) = fetch_invocations(&home, version);
+    run_all(&steps, dry_run).map_err(|e| {
+        format!(
+            "{e}\nnema gotovih modula za {}; napravi ih sam: `bw runtime build-patched`",
+            release_tag(version)
+        )
+    })?;
+    if dry_run {
+        return Ok(());
+    }
+    install_from(|_, lib| staging.join(lib), &app, false)?;
+    let _ = fs::remove_dir_all(&staging);
+    println!(
+        "Wine moduli {} instalirani u {}",
+        release_tag(version),
+        app.display()
+    );
+    Ok(())
 }
 
 #[cfg(test)]
