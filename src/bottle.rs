@@ -86,8 +86,17 @@ fn quote(s: &str) -> String {
 fn base_env(prefix: &Path) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     env.insert("WINEPREFIX".into(), prefix.display().to_string());
-    env.insert("WINEDEBUG".into(), "-all".into());
+    env.insert(
+        "WINEDEBUG".into(),
+        winedebug(std::env::var("WINEDEBUG").ok()),
+    );
     env
+}
+
+/// Tih Wine, osim ako korisnik sam postavi `WINEDEBUG` (npr. `warn+dsound` za dijagnozu).
+fn winedebug(user: Option<String>) -> String {
+    user.filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "-all".into())
 }
 
 fn wineserver(wine: &str, prefix: &Path, flag: &str) -> Invocation {
@@ -1014,6 +1023,13 @@ dxgi = "native,builtin"
         let inv = run_invocation(&wine, Path::new("/p"), &recipe()).unwrap();
         assert_eq!(inv.env["VK_ADD_DRIVER_FILES"], icd.display().to_string());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn user_winedebug_wins_over_quiet_default() {
+        assert_eq!(winedebug(None), "-all");
+        assert_eq!(winedebug(Some(String::new())), "-all");
+        assert_eq!(winedebug(Some("warn+dsound".into())), "warn+dsound");
     }
 
     #[test]
