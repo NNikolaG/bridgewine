@@ -11,9 +11,10 @@ exe = "AoE3DE_s.exe"
 # 64-bitni Steam klijent (2026+) pada na GPTK-ovom Wine 7.7 (nema BCrypt pseudo-handle),
 # pa bottle koristi WineHQ (`bw runtime install`). D3DMetal ide samo uz GPTK Wine.
 # wined3d (OpenGL 4.1) nema D3D11 FL11 ("video hardware does not support DirectX 11"),
-# pa D3D11 ide preko DXMT-a (Metal), koji bw sam instalira u runtime.
+# pa D3D11 ide preko DXVK-a (MoltenVK) samo za igru; DXMT (Metal) je u runtime-u za Steam.
+# Preko DXMT-a i D3DMetal-a meni je isecen (vidi known_issues.menu_text).
 wine = "winehq"          # gptk | winehq | system
-graphics = "dxmt"        # d3dmetal | dxmt | dxvk | wined3d
+graphics = "dxvk"        # d3dmetal | dxmt | dxvk | wined3d
 directx = 11
 windows_version = "win10"
 # Nasi Wine moduli (patches/): direktni syscall-ovi (zastita igre), \\.\GLOBALROOT,
@@ -32,7 +33,7 @@ MTL_HUD_ENABLED = "0"    # 1 za Metal HUD sa FPS-om
 WINEDSOUND_QUEUE_MS = "80"
 
 [known_issues]
-d3dmetal = "Prijavljeno: dugmad u meniju gube tekst; ako se desi, probati DXVK-macOS (docs/install-gptk.md, korak 9)"
+menu_text = "DXMT i D3DMetal crtaju naslove i dugmad u meniju samo delimicno (Metal); zato DXVK (potvrdjeno na M5, 2026-11-01). DXMT: `bw run aoe3-de --graphics dxmt`"
 multiplayer = "Prijave praznog lobija i 'Host Rejected' na Macu, nema potvrdjenog resenja"
 large_games = "4+ igraca: Graphics Quality = Medium i limit 30 FPS protiv preskakanja frejmova"
 
