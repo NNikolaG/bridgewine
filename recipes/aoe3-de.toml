@@ -17,7 +17,7 @@ graphics = "dxmt"        # d3dmetal | dxmt | dxvk | wined3d
 directx = 11
 windows_version = "win10"
 # Nasi Wine moduli (patches/): direktni syscall-ovi (zastita igre), \\.\GLOBALROOT,
-# Rosetta CPU frekvencija. `bw setup` ih skida sa GitHub release-a ili gradi.
+# Rosetta CPU frekvencija, zvuk (dsound red, audio tajmer). `bw setup` ih skida sa GitHub release-a ili gradi.
 patched = true
 
 [steam]
@@ -27,6 +27,9 @@ cef_workaround = "wrapper"
 [env]
 WINEMSYNC = "1"
 MTL_HUD_ENABLED = "0"    # 1 za Metal HUD sa FPS-om
+# Zvuk ide preko DirectSound-a; nas dsound patch drzi 80 ms u redu umesto ~40 ms,
+# pa zakasnelo budjenje miksera pod Rosettom ne pravi rupe (krckanje).
+WINEDSOUND_QUEUE_MS = "80"
 
 [known_issues]
 d3dmetal = "Prijavljeno: dugmad u meniju gube tekst; ako se desi, probati DXVK-macOS (docs/install-gptk.md, korak 9)"
