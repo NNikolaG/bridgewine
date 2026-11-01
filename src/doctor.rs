@@ -364,7 +364,7 @@ pub fn evaluate_game(r: &Recipe, p: &GameProbe) -> Vec<Check> {
             &setup,
         ));
     }
-    if r.runtime.graphics == Graphics::Dxmt {
+    if r.runtime.graphics.needs_dxmt_runtime() {
         v.push(check(
             "DXMT",
             p.dxmt_runtime,
@@ -605,7 +605,6 @@ mod tests {
                 "Wine moduli",
                 "DXMT",
                 "Bottle",
-                "DXMT u bottle-u",
                 "GPTK ostaci",
                 "Steam",
                 "steamwebhelper",
