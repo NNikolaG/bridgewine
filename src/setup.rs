@@ -13,7 +13,7 @@ use std::process::{Command, ExitCode};
 use crate::bottle::{self, bottle_path, home, run_all, Invocation};
 use crate::doctor::{self, Status};
 use crate::dxmt;
-use crate::recipe::{Graphics, Recipe, Store, WineSource};
+use crate::recipe::{Recipe, Store, WineSource};
 use crate::runtime;
 use crate::wine_build;
 
@@ -28,7 +28,7 @@ pub fn plan(r: &Recipe) -> Vec<&'static str> {
     if r.runtime.patched {
         v.push("BridgeWine Wine moduli");
     }
-    if r.runtime.graphics == Graphics::Dxmt {
+    if r.runtime.graphics.needs_dxmt_runtime() {
         v.push("DXMT");
     }
     v.push("Bottle");
@@ -130,7 +130,7 @@ pub fn setup(r: &Recipe, dry_run: bool) -> Result<(), String> {
         patched_modules(app, dry_run)?;
     }
 
-    if r.runtime.graphics == Graphics::Dxmt {
+    if r.runtime.graphics.needs_dxmt_runtime() {
         step("DXMT");
         let app = app.as_deref().ok_or("ne znam gde je Wine runtime")?;
         dxmt::ensure(app, dry_run)?;

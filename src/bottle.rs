@@ -664,10 +664,10 @@ pub fn run(recipe: &Recipe, graphics: Option<Graphics>, dry_run: bool) -> Result
             recipe.game.id
         ));
     }
-    if graphics == Graphics::Dxmt {
+    if graphics.needs_dxmt_runtime() {
         let app = wine_build::app_for(&wine).ok_or("ne znam gde je Wine runtime")?;
         dxmt::ensure(&app, dry_run)?;
-        if !dry_run {
+        if graphics == Graphics::Dxmt && !dry_run {
             dxmt::sync_bottle(&app, &prefix)?;
         }
     }
