@@ -1,0 +1,134 @@
+Subject: [PATCH] winemac.drv: Export a macdrv_functions table for external D3D layers.
+
+DXMT (Direct3D 10/11 over Metal) creates its Metal view through
+dlsym(RTLD_DEFAULT, "macdrv_functions"), as offered by CrossOver's Wine.
+Upstream winemac.so hides every symbol, so DXMT fails with "Failed to
+create metal view" and games exit when they create their swap chain.
+
+Export the table, with a window content view as fallback host when the window has no client surface view yet. DXMT's struct macdrv_win_data only knows the leading
+hwnd/cocoa_window/cocoa_view/client_cocoa_view fields, which no longer
+match Wine's layout, so get_win_data hands out a copy in that layout that
+keeps the real data locked until release_win_data.
+---
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -2208,3 +2208,80 @@
+     pthread_mutex_init(&win_data_mutex, &attr);
+     pthread_mutexattr_destroy(&attr);
+ }
++
++
++/***********************************************************************
++ *              macdrv_functions
++ *
++ * Exported for external D3D layers such as DXMT, which look this table up
++ * with dlsym(RTLD_DEFAULT, "macdrv_functions") to create a Metal view in a
++ * window. Their struct macdrv_win_data only knows the leading fields below,
++ * so hand out a copy in that layout that keeps the real data locked.
++ */
++struct macdrv_ext_win_data
++{
++    HWND                    hwnd;
++    WineWindow             *cocoa_window;
++    WineContentView        *cocoa_view;
++    WineContentView        *client_cocoa_view;
++    struct macdrv_win_data *data;
++};
++
++static struct macdrv_ext_win_data *ext_get_win_data(HWND hwnd)
++{
++    struct macdrv_win_data *data = get_win_data(hwnd);
++    struct macdrv_ext_win_data *ret;
++
++    if (!data) return NULL;
++    if (!(ret = malloc(sizeof(*ret))))
++    {
++        release_win_data(data);
++        return NULL;
++    }
++    ret->hwnd = data->hwnd;
++    ret->cocoa_window = data->cocoa_window;
++    /* without a client surface (no GL/Vulkan yet) host the view in the content view */
++    ret->cocoa_view = data->client_view ? data->client_view
++                                        : macdrv_get_window_content_view(data->cocoa_window);
++    ret->client_cocoa_view = ret->cocoa_view;
++    ret->data = data;
++    return ret;
++}
++
++static void ext_release_win_data(struct macdrv_ext_win_data *data)
++{
++    if (!data) return;
++    release_win_data(data->data);
++    free(data);
++}
++
++static WineWindow *ext_get_cocoa_window(HWND hwnd, BOOL require_on_screen)
++{
++    return macdrv_get_cocoa_window(hwnd, require_on_screen);
++}
++
++DECLSPEC_EXPORT const struct
++{
++    void *init_display_devices;
++    struct macdrv_ext_win_data *(*get_win_data)(HWND hwnd);
++    void (*release_win_data)(struct macdrv_ext_win_data *data);
++    WineWindow *(*get_cocoa_window)(HWND hwnd, BOOL require_on_screen);
++    MTLDevice_id (*create_metal_device)(void);
++    void (*release_metal_device)(MTLDevice_id device);
++    WineMetalView *(*view_create_metal_view)(WineContentView *view, MTLDevice_id device);
++    CAMetalLayer *(*view_get_metal_layer)(WineMetalView *view);
++    void (*view_release_metal_view)(WineMetalView *view);
++    void *on_main_thread;
++} macdrv_functions =
++{
++    NULL,
++    ext_get_win_data,
++    ext_release_win_data,
++    ext_get_cocoa_window,
++    macdrv_create_metal_device,
++    macdrv_release_metal_device,
++    macdrv_view_create_metal_view,
++    macdrv_view_get_metal_layer,
++    macdrv_view_release_metal_view,
++    NULL,
++};
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -503,6 +503,7 @@
+ extern WineMetalView *macdrv_view_create_metal_view(WineContentView *view, MTLDevice_id device);
+ extern CAMetalLayer *macdrv_view_get_metal_layer(WineMetalView *view);
+ extern void macdrv_view_release_metal_view(WineMetalView *view);
++extern WineContentView *macdrv_get_window_content_view(WineWindow *window);
+ extern WineMetalSwapChain_id macdrv_create_view_swapchain(WineContentView *view);
+ extern WineMetalSwapChain_id macdrv_create_offscreen_swapchain(void* hwnd, CGRect bounds);
+ extern CAMetalLayer *macdrv_swapchain_get_layer(WineMetalSwapChain_id swapchain);
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -3952,5 +3952,23 @@
+         }
+         if (window)
+             [[window contentView] clearMarkedText];
++    });
++}
++
++
++/***********************************************************************
++ *              macdrv_get_window_content_view
++ *
++ * The window's content view, to host Metal views of external D3D layers when
++ * the window has no client surface view.
++ */
++WineContentView *macdrv_get_window_content_view(WineWindow *window)
++{
++    __block WineContentView *view;
++
++    OnMainThread(^{
++        view = [window contentView];
+     });
++
++    return view;
+ }

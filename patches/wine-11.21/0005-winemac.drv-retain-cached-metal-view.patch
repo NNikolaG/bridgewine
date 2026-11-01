@@ -1,0 +1,55 @@
+Subject: [PATCH] winemac.drv: Retain the cached Metal view handed out by newMetalViewWithDevice.
+
+newMetalViewWithDevice returned the window's existing WineMetalView
+without a reference when called again, but every caller releases what it
+got through macdrv_view_release_metal_view(). A game that creates a
+second swap chain for its window (e.g. when switching to fullscreen)
+over-released the view and crashed in objc_release.
+
+Retain the cached view and count its users, and only remove it from the
+window when the last one releases it.
+---
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -217,6 +217,8 @@
+ @interface WineMetalView : WineBaseView
+ {
+     id<MTLDevice> _device;
++@public
++    NSUInteger _users; /* callers of macdrv_view_create_metal_view() not yet released */
+ }
+ 
+     - (id) initWithFrame:(NSRect)frame device:(id<MTLDevice>)device;
+@@ -558,13 +560,20 @@
+ 
+     - (WineMetalView*) newMetalViewWithDevice:(id<MTLDevice>)device
+     {
+-        if (_metalView) return _metalView;
++        if (_metalView)
++        {
++            /* "new" hands out a reference; a second swap chain for the same
++               window must not share the first one's. */
++            _metalView->_users++;
++            return [_metalView retain];
++        }
+ 
+         WineMetalView* view = [[WineMetalView alloc] initWithFrame:[self bounds] device:device];
+         [view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+         [self setAutoresizesSubviews:YES];
+         [self addSubview:view positioned:NSWindowBelow relativeTo:nil];
+         _metalView = view;
++        _metalView->_users = 1;
+ 
+         [(WineWindow*)self.window windowDidDrawContent];
+ 
+@@ -3632,7 +3641,8 @@
+ void macdrv_view_release_metal_view(WineMetalView *view)
+ {
+     OnMainThread(^{
+-        [view removeFromSuperview];
++        /* keep the view on screen while another caller still uses it */
++        if (!view->_users || !--view->_users) [view removeFromSuperview];
+         [view release];
+     });
+ }

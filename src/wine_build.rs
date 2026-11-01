@@ -1,10 +1,11 @@
 //! Nasi Wine moduli: zvanicni Wine izvorni kod + patch-evi iz `patches/`.
 //!
 //! WineHQ 11.21 na macOS-u ne radi sa igrama cija zastita zove direktne syscall-ove
-//! i otvara svoj exe preko `\\.\GLOBALROOT\??\C:\...` (AoE3 DE), a pod Rosettom
-//! prijavljuje CPU od 1000 MHz. Ispravke su u `patches/wine-<ver>/`; ovde ih
-//! primenjujemo na izvorni kod sa dl.winehq.org, gradimo samo izmenjene module
-//! (x86_64, preko Rosette) i menjamo ih u runtime-u. Originali ostaju pored kao `*.orig`.
+//! i otvara svoj exe preko `\\.\GLOBALROOT\??\C:\...` (AoE3 DE), pod Rosettom
+//! prijavljuje CPU od 1000 MHz, a winemac.drv ne daje DXMT-u Metal view.
+//! Ispravke su u `patches/wine-<ver>/`; ovde ih primenjujemo na izvorni kod sa
+//! dl.winehq.org, gradimo samo izmenjene module (x86_64, preko Rosette) i menjamo
+//! ih u runtime-u. Originali ostaju pored kao `*.orig`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::process::ExitCode;
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
-pub const PATCHES: [(&str, &str); 3] = [
+pub const PATCHES: [(&str, &str); 5] = [
     (
         "0001-ntdll-restore-TEB-GSBASE-after-SIGSYS-on-macOS.patch",
         include_str!(
@@ -32,11 +33,22 @@ pub const PATCHES: [(&str, &str); 3] = [
             "../patches/wine-11.21/0003-wineboot-dont-report-cpu-clock-below-max-mhz.patch"
         ),
     ),
+    (
+        "0004-winemac.drv-export-macdrv_functions-for-external-D3D-layers.patch",
+        include_str!(
+            "../patches/wine-11.21/0004-winemac.drv-export-macdrv_functions-for-external-D3D-layers.patch"
+        ),
+    ),
+    (
+        "0005-winemac.drv-retain-cached-metal-view.patch",
+        include_str!("../patches/wine-11.21/0005-winemac.drv-retain-cached-metal-view.patch"),
+    ),
 ];
 
 /// Moduli koje patch-evi menjaju: putanja u build folderu -> putanja u `lib/wine/`.
-pub const TARGETS: [(&str, &str); 2] = [
+pub const TARGETS: [(&str, &str); 3] = [
     ("dlls/ntdll/ntdll.so", "x86_64-unix/ntdll.so"),
+    ("dlls/winemac.drv/winemac.so", "x86_64-unix/winemac.so"),
     (
         "programs/wineboot/x86_64-windows/wineboot.exe",
         "x86_64-windows/wineboot.exe",
@@ -303,21 +315,29 @@ mod tests {
     }
 
     #[test]
-    fn build_patches_then_makes_only_ntdll() {
+    fn build_patches_then_makes_only_our_modules() {
         let inv = build_invocations(Path::new("/s"), Path::new("/c/w.tar.xz"), "11.21", "/p");
         let cmds: Vec<String> = inv.iter().map(|i| i.args[4..].join(" ")).collect();
         assert_eq!(cmds[0], "rm -rf /s/wine-11.21 /s/build-11.21");
         assert_eq!(cmds[1], "tar -xJf /c/w.tar.xz");
-        assert!(cmds[2].starts_with("patch -p1 --forward -i /s/patches-11.21/0001-"));
-        assert!(cmds[3].starts_with("patch -p1 --forward -i /s/patches-11.21/0002-"));
-        assert!(cmds[4].starts_with("patch -p1 --forward -i /s/patches-11.21/0003-"));
-        assert_eq!(inv[2].args[3], "/s/wine-11.21");
-        assert!(cmds[6].starts_with("arch -x86_64 ../wine-11.21/configure CC=clang -arch x86_64"));
+        for (i, (name, _)) in PATCHES.iter().enumerate() {
+            assert_eq!(
+                cmds[2 + i],
+                format!("patch -p1 --forward -i /s/patches-11.21/{name}")
+            );
+            assert_eq!(inv[2 + i].args[3], "/s/wine-11.21");
+        }
+        let n = 2 + PATCHES.len();
+        assert_eq!(cmds[n], "mkdir -p /s/build-11.21");
         assert!(
-            cmds[7].ends_with("dlls/ntdll/ntdll.so programs/wineboot/x86_64-windows/wineboot.exe")
+            cmds[n + 1].starts_with("arch -x86_64 ../wine-11.21/configure CC=clang -arch x86_64")
         );
-        assert_eq!(inv[7].args[3], "/s/build-11.21");
-        assert_eq!(inv[7].env["PATH"], "/p");
+        assert!(cmds[n + 2].ends_with(
+            "dlls/ntdll/ntdll.so dlls/winemac.drv/winemac.so programs/wineboot/x86_64-windows/wineboot.exe"
+        ));
+        assert_eq!(inv[n + 2].args[3], "/s/build-11.21");
+        assert_eq!(inv[n + 2].env["PATH"], "/p");
+        assert_eq!(inv.len(), n + 3);
     }
 
     #[test]
@@ -329,7 +349,7 @@ mod tests {
             fs::write(&p, b"ours").unwrap();
         }
         assert!(!is_installed(&app));
-        fs::write(stamp_path(&app), stamp_text(&[4, 4])).unwrap();
+        fs::write(stamp_path(&app), stamp_text(&[4, 4, 4])).unwrap();
         assert!(is_installed(&app));
         // runtime ponovo instaliran: drugi ntdll.so
         fs::write(lib_dir(&app).join(TARGETS[0].1), b"gcenx build").unwrap();
