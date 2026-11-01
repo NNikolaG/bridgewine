@@ -244,20 +244,37 @@ fn steam_dir(prefix: &Path) -> PathBuf {
         .join("Steam")
 }
 
-/// Vraca true ako je helper upravo umotan. Bez Steam-ovog CEF foldera ne radi nista.
+/// Bilo koja verzija naseg wrappera: jedino on u sebi ima ime pravog helpera (UTF-16).
+pub fn is_helper_wrapper(exe: &[u8]) -> bool {
+    let needle: Vec<u8> = HELPER_REAL
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    exe.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Vraca true ako je helper upravo (ponovo) umotan. Bez Steam-ovog CEF foldera ne radi nista.
+///
+/// Wrapper se nikad ne preimenuje u `_real` (inace pokrece sam sebe u krug); ako je
+/// `_real` nestao ili je i on wrapper, javljamo gresku umesto da pogadjamo.
 pub fn wrap_steam_helper(prefix: &Path) -> Result<bool, String> {
     let cef = steam_dir(prefix).join("bin").join("cef").join("cef.win64");
     let helper = cef.join(HELPER);
-    let current = match fs::read(&helper) {
-        Ok(b) => b,
-        Err(_) => return Ok(false),
-    };
-    if current == HELPER_WRAPPER && cef.join(HELPER_REAL).exists() {
+    let real = cef.join(HELPER_REAL);
+    let Ok(current) = fs::read(&helper) else {
         return Ok(false);
-    }
+    };
     let err = |e: std::io::Error| format!("{}: {e}", helper.display());
-    if current != HELPER_WRAPPER {
-        fs::rename(&helper, cef.join(HELPER_REAL)).map_err(err)?;
+    if !is_helper_wrapper(&current) {
+        // original (npr. posle Steam update-a) postaje _real
+        fs::rename(&helper, &real).map_err(err)?;
+    } else if !fs::read(&real).is_ok_and(|b| !is_helper_wrapper(&b)) {
+        return Err(format!(
+            "{} nedostaje ili je wrapper; vrati originalni Steam helper (npr. obrisi oba fajla i pokreni Steam bez -noverifyfiles)",
+            real.display()
+        ));
+    } else if current == HELPER_WRAPPER {
+        return Ok(false);
     }
     fs::write(&helper, HELPER_WRAPPER).map_err(err)?;
     Ok(true)
@@ -777,26 +794,32 @@ dxgi = "native,builtin"
     }
 
     #[test]
-    fn quarantines_only_old_abi_builtins() {
-        let dir = std::env::temp_dir().join(format!("bw-stale-{}", std::process::id()));
+    fn older_wrapper_is_replaced_not_renamed_to_real() {
+        let dir = std::env::temp_dir().join(format!("bw-cef-old-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let sys = dir.join("drive_c/windows/system32");
-        fs::create_dir_all(&sys).unwrap();
-        let old = b"MZ..Wine builtin DLL..ntdll.dll\0__wine_unix_call\0..";
-        let new = b"MZ..Wine builtin DLL..ntdll.dll\0__wine_unix_call_dispatcher\0";
-        fs::write(sys.join("atidxx64.dll"), old).unwrap();
-        fs::write(sys.join("d3d11.dll"), new).unwrap();
-        fs::write(sys.join("game.dll"), b"MZ native __wine_unix_call\0").unwrap();
-        assert!(is_stale_builtin(old));
-        assert!(!is_stale_builtin(new));
+        let cef = steam_dir(&dir).join("bin/cef/cef.win64");
+        fs::create_dir_all(&cef).unwrap();
+        let mut old_wrapper = b"MZ other build ".to_vec();
+        old_wrapper.extend(HELPER_REAL.encode_utf16().flat_map(u16::to_le_bytes));
+        fs::write(cef.join(HELPER), &old_wrapper).unwrap();
+        fs::write(cef.join(HELPER_REAL), b"real helper").unwrap();
 
-        let moved = quarantine_stale_builtins(&dir).unwrap();
-        assert_eq!(moved, [dir.join("bw-stale-dlls/system32/atidxx64.dll")]);
-        assert!(!sys.join("atidxx64.dll").exists());
-        assert!(sys.join("d3d11.dll").exists());
-        assert!(sys.join("game.dll").exists());
-        assert!(quarantine_stale_builtins(&dir).unwrap().is_empty());
+        assert!(wrap_steam_helper(&dir).unwrap());
+        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), HELPER_WRAPPER);
+        assert_eq!(fs::read(cef.join(HELPER_REAL)).unwrap(), b"real helper");
+
+        // _real je i sam wrapper: ne pogadjamo, javljamo gresku
+        fs::write(cef.join(HELPER_REAL), &old_wrapper).unwrap();
+        assert!(wrap_steam_helper(&dir).is_err());
+        fs::remove_file(cef.join(HELPER_REAL)).unwrap();
+        assert!(wrap_steam_helper(&dir).is_err());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shipped_wrapper_is_recognized() {
+        assert!(is_helper_wrapper(HELPER_WRAPPER));
+        assert!(!is_helper_wrapper(b"MZ steamwebhelper_real.exe in ASCII"));
     }
 
     #[test]

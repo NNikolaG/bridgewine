@@ -53,6 +53,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR unused, int show)
     wcscpy(real + dir_len, REAL_NAME);
 
     const wchar_t *rest = skip_argv0(GetCommandLineW());
+    /* Our own switches already in front: steamwebhelper_real.exe is a wrapper
+     * too, and starting it would recurse forever. */
+    if (!wcsncmp(rest, EXTRA_ARGS, wcslen(EXTRA_ARGS)))
+        return 2;
     size_t len = wcslen(real) + wcslen(EXTRA_ARGS) + wcslen(rest) + 8;
     wchar_t *cmd = HeapAlloc(GetProcessHeap(), 0, len * sizeof(wchar_t));
     if (!cmd)
