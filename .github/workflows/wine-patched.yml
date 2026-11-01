@@ -6,7 +6,7 @@ name: Wine patched
 # pravi samo kad se patch-evi promene.
 on:
   push:
-    branches: [main, bottle-run]
+    branches: [main]
     paths:
       - patches/**
       - src/wine_build.rs
