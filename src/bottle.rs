@@ -222,14 +222,8 @@ pub fn session_prep_invocations(wine: &str, prefix: &Path) -> Vec<Invocation> {
     ]
 }
 
-/// Pokrece pripremu sesije; `wineserver -p` ne uspe ako sesija vec radi, i to je u redu.
 fn prep_session(wine: &str, prefix: &Path, dry_run: bool) -> Result<(), String> {
-    let prep = session_prep_invocations(wine, prefix);
-    println!("$ {}", prep[0].display());
-    if !dry_run {
-        let _ = prep[0].command().status();
-    }
-    run_all(&prep[1..], dry_run)
+    run_all(&session_prep_invocations(wine, prefix), dry_run)
 }
 
 pub fn run_invocation(wine: &str, prefix: &Path, recipe: &Recipe) -> Result<Invocation, String> {
@@ -267,10 +261,22 @@ pub(crate) fn run_all(invs: &[Invocation], dry_run: bool) -> Result<(), String> 
             .status()
             .map_err(|e| format!("ne mogu da pokrenem {}: {e}", inv.program))?;
         if !status.success() {
+            if may_fail(inv) {
+                continue;
+            }
             return Err(format!("komanda nije uspela ({status})"));
         }
     }
     Ok(())
+}
+
+/// `wineserver -k` bez pokrenute sesije i `wineserver -p` uz vec pokrenutu vracaju 1; to nije greska.
+fn may_fail(inv: &Invocation) -> bool {
+    inv.program.ends_with("wineserver")
+        && inv
+            .args
+            .first()
+            .is_some_and(|a| a == "-k" || a.starts_with("-p"))
 }
 
 fn wine_or_err(recipe: &Recipe) -> Result<String, String> {
@@ -553,6 +559,18 @@ dxgi = "native,builtin"
             ]
         );
         assert!(inv.iter().all(|i| i.env["WINEPREFIX"] == "/p"));
+    }
+
+    #[test]
+    fn killing_or_pinning_wineserver_may_fail() {
+        assert!(may_fail(&wineserver("/w/wine", Path::new("/p"), "-k")));
+        assert!(may_fail(
+            &session_prep_invocations("/w/wine", Path::new("/p"))[0]
+        ));
+        assert!(!may_fail(&wineserver("/w/wine", Path::new("/p"), "-w")));
+        assert!(!may_fail(
+            &session_prep_invocations("/w/wine", Path::new("/p"))[1]
+        ));
     }
 
     #[test]
