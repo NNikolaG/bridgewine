@@ -103,7 +103,17 @@ enum RuntimeAction {
     BuildPatched {
         #[arg(long)]
         dry_run: bool,
+        /// Samo spakuj module u ovaj folder (za release u CI-ju), bez runtime-a
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
+    /// Skini gotove nase Wine module sa GitHub release-a (bez kompajliranja)
+    InstallPatched {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Ispisi tag release-a za trenutne patch-eve (koristi CI)
+    PatchedTag,
 }
 
 #[derive(Subcommand)]
@@ -143,8 +153,17 @@ fn main() -> ExitCode {
             action: RuntimeAction::Install { dry_run },
         } => runtime::cmd_install(dry_run),
         Command::Runtime {
-            action: RuntimeAction::BuildPatched { dry_run },
-        } => wine_build::cmd_build(dry_run),
+            action: RuntimeAction::BuildPatched { dry_run, out },
+        } => wine_build::cmd_build(dry_run, out),
+        Command::Runtime {
+            action: RuntimeAction::InstallPatched { dry_run },
+        } => wine_build::cmd_install_prebuilt(dry_run),
+        Command::Runtime {
+            action: RuntimeAction::PatchedTag,
+        } => {
+            println!("{}", wine_build::release_tag(runtime::WINEHQ_VERSION));
+            ExitCode::SUCCESS
+        }
         Command::Run { game, dry_run } => with_recipe(&dir, &game, |r| bottle::cmd_run(r, dry_run)),
     }
 }

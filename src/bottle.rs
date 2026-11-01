@@ -379,7 +379,7 @@ fn prep_winehq(wine: &str, prefix: &Path) -> Result<(), String> {
     if let Some(app) = wine_build::app_for(wine) {
         if !wine_build::is_installed(&app) {
             eprintln!(
-                "upozorenje: runtime nema BridgeWine Wine module (igre sa zastitom padaju); pokreni `bw runtime build-patched`"
+                "upozorenje: runtime nema BridgeWine Wine module (igre sa zastitom padaju); pokreni `bw runtime install-patched` (ili `bw runtime build-patched`)"
             );
         }
     }

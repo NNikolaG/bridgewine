@@ -32,6 +32,8 @@ cargo build --release
 
 ```sh
 bw runtime install         # WineHQ Wine u ~/Games/BridgeWine/runtimes (64-bitni Steam ne radi na GPTK Wine 7.7)
+bw runtime install-patched # nasi Wine moduli (patches/) sa GitHub release-a; bez kompajliranja
+# ili sam: bw runtime build-patched (treba brew install bison flex mingw-w64)
 bw bottle create aoe3-de   # Wine prefiks u ~/Games/BridgeWine/bottles/aoe3-de
 bw steam install aoe3-de   # skida i tiho instalira Windows Steam
 bw run aoe3-de             # pokrece igru kroz Steam (-applaunch 933110)

@@ -1,0 +1,108 @@
+name: Wine patched
+
+# Gradi nase Wine module (zvanicni izvorni kod + patches/) na macOS-u i stavlja
+# ih na GitHub release, da `bw runtime install-patched` radi bez kompajliranja.
+# Tag zavisi od sadrzaja patch-eva (`bw runtime patched-tag`), pa se release
+# pravi samo kad se patch-evi promene.
+on:
+  push:
+    branches: [main]
+    paths:
+      - patches/**
+      - src/wine_build.rs
+      - src/runtime.rs
+      - .github/workflows/wine-patched.yml
+  pull_request:
+    paths:
+      - patches/**
+      - src/wine_build.rs
+      - .github/workflows/wine-patched.yml
+  workflow_dispatch:
+
+concurrency:
+  group: wine-patched-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rosetta 2 i alati za build
+        run: |
+          test "$(uname -m)" = arm64
+          softwareupdate --install-rosetta --agree-to-license || true
+          arch -x86_64 /usr/bin/true
+          brew install bison flex mingw-w64
+
+      - name: Tag release-a
+        id: tag
+        run: |
+          cargo build --release --locked
+          tag=$(./target/release/bw runtime patched-tag)
+          ver=${tag#wine-}; ver=${ver%%-bw-*}
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=bw-wine-$ver-patched.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag"
+
+      - name: Vec postoji?
+        id: exists
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/cache@v4
+        if: steps.exists.outputs.yes != 'true'
+        with:
+          path: bw-home/cache
+          key: wine-src-${{ hashFiles('src/runtime.rs') }}
+
+      - name: Build modula
+        if: steps.exists.outputs.yes != 'true'
+        env:
+          BW_HOME: ${{ github.workspace }}/bw-home
+        run: ./target/release/bw runtime build-patched --out dist
+
+      - name: Provera
+        if: steps.exists.outputs.yes != 'true'
+        run: |
+          file dist/x86_64-unix/ntdll.so | grep -q 'x86_64'
+          file dist/x86_64-windows/wineboot.exe | grep -q 'PE32+'
+          codesign -v dist/x86_64-unix/ntdll.so
+          cat dist/bw-release.txt
+
+      - name: Pakovanje
+        if: steps.exists.outputs.yes != 'true'
+        run: |
+          tar -czf ${{ steps.tag.outputs.asset }} -C dist .
+          shasum -a 256 ${{ steps.tag.outputs.asset }} > ${{ steps.tag.outputs.asset }}.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: steps.exists.outputs.yes != 'true'
+        with:
+          name: ${{ steps.tag.outputs.tag }}
+          path: ${{ steps.tag.outputs.asset }}*
+          if-no-files-found: error
+
+      - name: Release
+        if: github.event_name != 'pull_request' && steps.exists.outputs.yes != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            ${{ steps.tag.outputs.asset }} ${{ steps.tag.outputs.asset }}.sha256 \
+            --target "${{ github.sha }}" \
+            --title "Wine + BridgeWine patch-evi (${{ steps.tag.outputs.tag }})" \
+            --notes-file dist/bw-release.txt \
+            --prerelease
