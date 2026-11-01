@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::bottle::{home, run_all, Invocation};
+use crate::bottle::{download_invocations, home, run_all, Invocation};
 
 pub const WINEHQ_VERSION: &str = "11.21";
 
@@ -77,14 +77,15 @@ pub fn install_invocations(home: &Path, version: &str) -> Vec<Invocation> {
         app.display().to_string(),
     );
     let unpacked = format!("{staging}/Wine Devel.app");
-    vec![
-        inv("curl", &["-fL", "-o", &tarball, &winehq_url(version)]),
+    let mut steps = download_invocations(&winehq_url(version), Path::new(&tarball));
+    steps.extend([
         inv("mkdir", &["-p", &staging]),
         inv("tar", &["-xJf", &tarball, "-C", &staging]),
         inv("mv", &[&unpacked, &app]),
         inv("rmdir", &[&staging]),
         inv("xattr", &["-dr", "com.apple.quarantine", &app]),
-    ]
+    ]);
+    steps
 }
 
 pub fn cmd_install(dry_run: bool) -> ExitCode {
@@ -99,8 +100,11 @@ pub fn cmd_install(dry_run: bool) -> ExitCode {
     }
     let mut steps = install_invocations(&home, WINEHQ_VERSION);
     // tarball iz prethodnog pokusaja ne skidamo ponovo
-    if Path::new(&steps[0].args[2]).exists() {
-        steps.remove(0);
+    let tarball = home
+        .join("cache")
+        .join(format!("wine-devel-{WINEHQ_VERSION}-osx64.tar.xz"));
+    if tarball.exists() {
+        steps.drain(..2);
     }
     match run_all(&steps, dry_run) {
         Ok(()) => {
@@ -139,17 +143,20 @@ mod tests {
     fn install_downloads_unpacks_and_clears_quarantine() {
         let inv = install_invocations(Path::new("/h"), "11.21");
         let progs: Vec<_> = inv.iter().map(|i| i.program.as_str()).collect();
-        assert_eq!(progs, ["curl", "mkdir", "tar", "mv", "rmdir", "xattr"]);
+        assert_eq!(
+            progs,
+            ["curl", "mv", "mkdir", "tar", "mv", "rmdir", "xattr"]
+        );
         assert!(inv[0].args.contains(&winehq_url("11.21")));
         assert_eq!(
-            inv[3].args,
+            inv[4].args,
             [
                 "/h/runtimes/.unpack-11.21/Wine Devel.app",
                 "/h/runtimes/wine-devel-11.21.app"
             ]
         );
         assert_eq!(
-            inv[5].args,
+            inv[6].args,
             [
                 "-dr",
                 "com.apple.quarantine",
