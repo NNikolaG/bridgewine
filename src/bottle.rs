@@ -114,9 +114,10 @@ pub fn init_invocations(wine: &str, prefix: &Path) -> Vec<Invocation> {
     ]
 }
 
-/// Iskljucuje "Automatically detect settings" (WPAD). Bez ovoga Steam pre svakog
-/// preuzimanja trazi `wpad.local`, a ta mDNS pretraga na macOS-u visi ~3 minuta,
-/// pa updater pada sa "http error 0". Format: wininet magic 0x46, flags = 1 (direktno).
+/// Iskljucuje "Automatically detect settings" u IE podesavanjima (wininet magic 0x46,
+/// flags = 1, direktno). Samo ovo NE sprecava Steam-ov WPAD upit: Steam zove
+/// `WinHttpGetProxyForUrl` sa auto-detekcijom bez obzira na ovo; to resava
+/// `session_prep_invocations` (prazan DNS `Domain`).
 pub const NOPROXY_REG: &str = "REGEDIT4\r\n\r\n\
 [HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\Connections]\r\n\
 \"DefaultConnectionSettings\"=hex:46,00,00,00,00,00,00,00,01,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00\r\n";
