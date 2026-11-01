@@ -428,15 +428,15 @@ pub fn evaluate_game(r: &Recipe, p: &GameProbe) -> Vec<Check> {
     if !p.steam {
         return v;
     }
-    if r.steam.cef_workaround == CefWorkaround::Wrapper {
+    if r.steam.cef_workaround == CefWorkaround::Wine {
         v.push(check(
             "steamwebhelper",
-            p.helper_wrapped,
+            !p.helper_wrapped,
             Warn,
             yes_no(
-                p.helper_wrapped,
-                "nas wrapper",
-                "original (crn Steam prozor)",
+                !p.helper_wrapped,
+                "original (crta ga nas Wine patch)",
+                "stari bw wrapper (`bw run` vraca original)",
             ),
             &run,
         ));
@@ -587,7 +587,7 @@ mod tests {
             reg_keys: 5000,
             dxmt_bottle: true,
             steam: true,
-            helper_wrapped: true,
+            helper_wrapped: false,
             game_installed: true,
             ..Default::default()
         }
@@ -627,7 +627,7 @@ mod tests {
             quarantined: true,
             patched_modules: false,
             stale_dlls: vec!["atidxx64.dll".into()],
-            helper_wrapped: false,
+            helper_wrapped: true,
             game_installed: false,
             ..aoe3_ready()
         };

@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
-pub const PATCHES: [(&str, &str); 5] = [
+pub const PATCHES: [(&str, &str); 6] = [
     (
         "0001-ntdll-restore-TEB-GSBASE-after-SIGSYS-on-macOS.patch",
         include_str!(
@@ -33,6 +33,12 @@ pub const PATCHES: [(&str, &str); 5] = [
         ),
     ),
     (
+        "0004-kernelbase-start-steamwebhelper-with-software-rendering.patch",
+        include_str!(
+            "../patches/wine-11.21/0004-kernelbase-start-steamwebhelper-with-software-rendering.patch"
+        ),
+    ),
+    (
         "0010-dsound-make-the-mix-queue-depth-configurable.patch",
         include_str!(
             "../patches/wine-11.21/0010-dsound-make-the-mix-queue-depth-configurable.patch"
@@ -45,8 +51,12 @@ pub const PATCHES: [(&str, &str); 5] = [
 ];
 
 /// Moduli koje patch-evi menjaju: putanja u build folderu -> putanja u `lib/wine/`.
-pub const TARGETS: [(&str, &str); 4] = [
+pub const TARGETS: [(&str, &str); 5] = [
     ("dlls/ntdll/ntdll.so", "x86_64-unix/ntdll.so"),
+    (
+        "dlls/kernelbase/x86_64-windows/kernelbase.dll",
+        "x86_64-windows/kernelbase.dll",
+    ),
     (
         "programs/wineboot/x86_64-windows/wineboot.exe",
         "x86_64-windows/wineboot.exe",
@@ -467,24 +477,27 @@ mod tests {
     }
 
     #[test]
-    fn build_patches_then_makes_only_ntdll() {
+    fn build_patches_then_makes_only_our_modules() {
         let inv = build_invocations(Path::new("/s"), Path::new("/c/w.tar.xz"), "11.21", "/p");
         let cmds: Vec<String> = inv.iter().map(|i| i.args[4..].join(" ")).collect();
         assert_eq!(cmds[0], "rm -rf /s/wine-11.21 /s/build-11.21");
         assert_eq!(cmds[1], "tar -xJf /c/w.tar.xz");
-        assert!(cmds[2].starts_with("patch -p1 --forward -i /s/patches-11.21/0001-"));
-        assert!(cmds[3].starts_with("patch -p1 --forward -i /s/patches-11.21/0002-"));
-        assert!(cmds[4].starts_with("patch -p1 --forward -i /s/patches-11.21/0003-"));
-        assert!(cmds[5].starts_with("patch -p1 --forward -i /s/patches-11.21/0010-dsound"));
-        assert!(cmds[6].starts_with("patch -p1 --forward -i /s/patches-11.21/0011-winecoreaudio"));
+        for (i, (name, _)) in PATCHES.iter().enumerate() {
+            assert_eq!(
+                cmds[2 + i],
+                format!("patch -p1 --forward -i /s/patches-11.21/{name}")
+            );
+        }
         assert_eq!(inv[2].args[3], "/s/wine-11.21");
-        assert!(cmds[8].starts_with("arch -x86_64 ../wine-11.21/configure CC=clang -arch x86_64"));
-        assert!(cmds[9].ends_with(
-            "dlls/ntdll/ntdll.so programs/wineboot/x86_64-windows/wineboot.exe \
-             dlls/dsound/x86_64-windows/dsound.dll dlls/winecoreaudio.drv/winecoreaudio.so"
-        ));
-        assert_eq!(inv[9].args[3], "/s/build-11.21");
-        assert_eq!(inv[9].env["PATH"], "/p");
+        let n = 2 + PATCHES.len();
+        assert!(
+            cmds[n + 1].starts_with("arch -x86_64 ../wine-11.21/configure CC=clang -arch x86_64")
+        );
+        let modules: Vec<&str> = TARGETS.iter().map(|(b, _)| *b).collect();
+        assert!(cmds[n + 2].ends_with(&modules.join(" ")));
+        assert!(cmds[n + 2].contains("dlls/kernelbase/x86_64-windows/kernelbase.dll"));
+        assert_eq!(inv[n + 2].args[3], "/s/build-11.21");
+        assert_eq!(inv[n + 2].env["PATH"], "/p");
     }
 
     #[test]

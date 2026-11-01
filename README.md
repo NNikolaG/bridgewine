@@ -33,12 +33,12 @@ cargo build --release
 ```sh
 bw setup aoe3-de    # WineHQ runtime, nasi Wine moduli, DXMT, bottle, Windows Steam
 bw run aoe3-de      # Steam (uloguj se, prvi put instaliraj igru), pa igra
-bw doctor aoe3-de   # sta fali: karantin, runtime, moduli, DXMT, bottle, Steam, wrapper, igra
+bw doctor aoe3-de   # sta fali: karantin, runtime, moduli, DXMT, bottle, Steam, steamwebhelper, igra
 ```
 
 `bw setup` preskace sve sto vec postoji, pa je bezbedno pokrenuti ga ponovo (npr. posle
 nove verzije `bw`-a ili patch-eva). Recept kaze sta treba: `patched = true` za nase Wine
-module, `graphics = "dxmt"`, `[steam] cef_workaround = "wrapper"` za crn Steam prozor.
+module, `graphics = "dxmt"`, `[steam] cef_workaround = "wine"` za crn Steam prozor (nas kernelbase patch).
 
 ## AoE3 DE korak po korak
 

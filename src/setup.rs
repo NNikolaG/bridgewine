@@ -3,7 +3,7 @@
 //!
 //! Redosled: Mac provere -> Wine runtime (+ skidanje karantina) -> nasi Wine moduli
 //! (release, pa build iz izvora ako release ne postoji) -> grafika (DXMT) -> bottle
-//! -> Windows Steam. WPAD/DNS zaobilazenje, steamwebhelper wrapper, ciscenje GPTK
+//! -> Windows Steam. WPAD/DNS zaobilazenje, vracanje originalnog steamwebhelpera, ciscenje GPTK
 //! DLL-ova i kopiranje DXMT-a u bottle radi `bw run` pri svakom startu, jer ih
 //! Steam i Wine mogu vratiti.
 
