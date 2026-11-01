@@ -222,6 +222,97 @@ pub fn session_prep_invocations(wine: &str, prefix: &Path) -> Vec<Invocation> {
     ]
 }
 
+/// Nas wrapper (wrapper/steamwebhelper-wrapper.c), izgradjen sa
+/// `x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows`.
+pub const HELPER_WRAPPER: &[u8] = include_bytes!("../wrapper/steamwebhelper.exe");
+const HELPER: &str = "steamwebhelper.exe";
+const HELPER_REAL: &str = "steamwebhelper_real.exe";
+
+/// Steam-ov CEF helper crta u posebnom GPU procesu, a winemac.drv taj izlaz ne
+/// prikazuje (Wine bug 56014), pa je prozor crn. `-cef-*` flagovi steam.exe-a ne
+/// stizu do helpera, zato helper menjamo wrapperom koji pokrece pravi helper sa
+/// `--disable-gpu`. Steam pri azuriranju vraca original, pa ovo radimo pri svakom startu.
+pub const STEAM_ARGS: [&str; 3] = ["-no-cef-sandbox", "-cef-single-process", "-noverifyfiles"];
+const STEAM_DLL_OVERRIDES: &str = "gameoverlayrenderer,gameoverlayrenderer64=d";
+
+fn steam_dir(prefix: &Path) -> PathBuf {
+    prefix
+        .join("drive_c")
+        .join("Program Files (x86)")
+        .join("Steam")
+}
+
+/// Vraca true ako je helper upravo umotan. Bez Steam-ovog CEF foldera ne radi nista.
+pub fn wrap_steam_helper(prefix: &Path) -> Result<bool, String> {
+    let cef = steam_dir(prefix).join("bin").join("cef").join("cef.win64");
+    let helper = cef.join(HELPER);
+    let current = match fs::read(&helper) {
+        Ok(b) => b,
+        Err(_) => return Ok(false),
+    };
+    if current == HELPER_WRAPPER && cef.join(HELPER_REAL).exists() {
+        return Ok(false);
+    }
+    let err = |e: std::io::Error| format!("{}: {e}", helper.display());
+    if current != HELPER_WRAPPER {
+        fs::rename(&helper, cef.join(HELPER_REAL)).map_err(err)?;
+    }
+    fs::write(&helper, HELPER_WRAPPER).map_err(err)?;
+    Ok(true)
+}
+
+/// Brise Chromium `Singleton*` lockove koje ostavi Steam koji je pao; sa njima novi
+/// helper misli da vec radi (dve Steam ikone u Dock-u, prazan prozor).
+pub fn clear_cef_locks(prefix: &Path) {
+    let Ok(users) = fs::read_dir(prefix.join("drive_c").join("users")) else {
+        return;
+    };
+    for user in users.flatten() {
+        let cache = user.path().join("AppData/Local/Steam/htmlcache");
+        let Ok(entries) = fs::read_dir(&cache) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with("Singleton") {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+const RUN_KEY: &str = r"[Software\\Microsoft\\Windows\\CurrentVersion\\Run]";
+
+/// Izbacuje `"Steam"` iz HKCU `...\CurrentVersion\Run`. Wine na startu sesije sam
+/// pokrece `steam.exe -silent` bez nasih flagova, i to pre nego sto bi `reg delete`
+/// stigao, zato menjamo `user.reg` direktno (vazi kad wineserver ne radi).
+pub fn strip_steam_autostart(user_reg: &str) -> Option<String> {
+    let mut in_run = false;
+    let mut changed = false;
+    let mut out = String::with_capacity(user_reg.len());
+    for line in user_reg.split_inclusive('\n') {
+        if line.starts_with('[') {
+            in_run = line.starts_with(RUN_KEY);
+        } else if in_run && line.to_ascii_lowercase().starts_with("\"steam\"=") {
+            changed = true;
+            continue;
+        }
+        out.push_str(line);
+    }
+    changed.then_some(out)
+}
+
+fn prep_steam(prefix: &Path) -> Result<(), String> {
+    if wrap_steam_helper(prefix)? {
+        println!("steamwebhelper umotan (BridgeWine wrapper)");
+    }
+    clear_cef_locks(prefix);
+    let reg = prefix.join("user.reg");
+    if let Some(t) = fs::read_to_string(&reg).ok().and_then(|t| strip_steam_autostart(&t)) {
+        fs::write(&reg, t).map_err(|e| format!("{}: {e}", reg.display()))?;
+    }
+    Ok(())
+}
+
 fn prep_session(wine: &str, prefix: &Path, dry_run: bool) -> Result<(), String> {
     run_all(&session_prep_invocations(wine, prefix), dry_run)
 }
@@ -229,8 +320,15 @@ fn prep_session(wine: &str, prefix: &Path, dry_run: bool) -> Result<(), String> 
 pub fn run_invocation(wine: &str, prefix: &Path, recipe: &Recipe) -> Result<Invocation, String> {
     let mut env = base_env(prefix);
     env.extend(recipe.env.clone());
-    if !recipe.dll_overrides.is_empty() {
-        env.insert("WINEDLLOVERRIDES".into(), recipe.dll_overrides_string());
+    let mut overrides = recipe.dll_overrides_string();
+    if recipe.game.store == Store::Steam {
+        if !overrides.is_empty() {
+            overrides.push(';');
+        }
+        overrides.push_str(STEAM_DLL_OVERRIDES);
+    }
+    if !overrides.is_empty() {
+        env.insert("WINEDLLOVERRIDES".into(), overrides);
     }
     let args = match (
         recipe.game.store,
@@ -238,7 +336,10 @@ pub fn run_invocation(wine: &str, prefix: &Path, recipe: &Recipe) -> Result<Invo
         &recipe.game.exe,
     ) {
         (Store::Steam, Some(app), _) => {
-            vec![STEAM_EXE.into(), "-applaunch".into(), app.to_string()]
+            let mut a = vec![STEAM_EXE.to_string()];
+            a.extend(STEAM_ARGS.map(String::from));
+            a.extend(["-applaunch".into(), app.to_string()]);
+            a
         }
         (_, _, Some(exe)) => vec![exe.clone()],
         _ => return Err("recept nema ni steam_app_id ni exe".into()),
@@ -385,6 +486,9 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
             );
         }
         let inv = run_invocation(&wine, &prefix, recipe)?;
+        if recipe.game.store == Store::Steam && !dry_run {
+            prep_steam(&prefix)?;
+        }
         prep_session(&wine, &prefix, dry_run)?;
         run_all(&[inv], dry_run)
     })())
@@ -531,9 +635,22 @@ dxgi = "native,builtin"
     #[test]
     fn run_launches_through_steam_with_recipe_env() {
         let inv = run_invocation("/w/wine64", Path::new("/p"), &recipe()).unwrap();
-        assert_eq!(inv.args, [STEAM_EXE, "-applaunch", "933110"]);
+        assert_eq!(
+            inv.args,
+            [
+                STEAM_EXE,
+                "-no-cef-sandbox",
+                "-cef-single-process",
+                "-noverifyfiles",
+                "-applaunch",
+                "933110"
+            ]
+        );
         assert_eq!(inv.env["WINEMSYNC"], "1");
-        assert_eq!(inv.env["WINEDLLOVERRIDES"], "dxgi=native,builtin");
+        assert_eq!(
+            inv.env["WINEDLLOVERRIDES"],
+            "dxgi=native,builtin;gameoverlayrenderer,gameoverlayrenderer64=d"
+        );
         assert_eq!(inv.env["WINEPREFIX"], "/p");
     }
 
@@ -571,6 +688,65 @@ dxgi = "native,builtin"
         assert!(!may_fail(
             &session_prep_invocations("/w/wine", Path::new("/p"))[1]
         ));
+    }
+
+    #[test]
+    fn wraps_steam_helper_and_rewraps_after_update() {
+        let dir = std::env::temp_dir().join(format!("bw-cef-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(!wrap_steam_helper(&dir).unwrap());
+        let cef = steam_dir(&dir).join("bin/cef/cef.win64");
+        fs::create_dir_all(&cef).unwrap();
+        fs::write(cef.join(HELPER), b"orig1").unwrap();
+
+        assert!(wrap_steam_helper(&dir).unwrap());
+        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), HELPER_WRAPPER);
+        assert_eq!(fs::read(cef.join(HELPER_REAL)).unwrap(), b"orig1");
+        assert!(!wrap_steam_helper(&dir).unwrap());
+
+        // Steam update vraca svoj helper.
+        fs::write(cef.join(HELPER), b"orig2").unwrap();
+        assert!(wrap_steam_helper(&dir).unwrap());
+        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), HELPER_WRAPPER);
+        assert_eq!(fs::read(cef.join(HELPER_REAL)).unwrap(), b"orig2");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn wrapper_is_a_pe_executable() {
+        assert_eq!(&HELPER_WRAPPER[..2], b"MZ");
+    }
+
+    #[test]
+    fn clears_cef_singleton_locks() {
+        let dir = std::env::temp_dir().join(format!("bw-lock-{}", std::process::id()));
+        let cache = dir.join("drive_c/users/u/AppData/Local/Steam/htmlcache");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("SingletonLock"), "").unwrap();
+        fs::write(cache.join("SingletonSocket"), "").unwrap();
+        fs::write(cache.join("Cookies"), "").unwrap();
+        clear_cef_locks(&dir);
+        assert!(!cache.join("SingletonLock").exists());
+        assert!(!cache.join("SingletonSocket").exists());
+        assert!(cache.join("Cookies").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn strips_only_steam_from_run_key() {
+        let reg = "WINE REGISTRY Version 2\n\
+[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run] 1793533771\n\
+#time=1dd\n\
+\"Steam\"=\"\\\"C:\\\\Program Files (x86)\\\\Steam\\\\steam.exe\\\" -silent\"\n\
+\"Other\"=\"x.exe\"\n\
+\n\
+[Software\\\\Valve\\\\Steam] 1\n\
+\"Steam\"=\"keep\"\n";
+        let out = strip_steam_autostart(reg).unwrap();
+        assert!(!out.contains("-silent"));
+        assert!(out.contains("\"Other\"=\"x.exe\""));
+        assert!(out.contains("\"Steam\"=\"keep\""));
+        assert_eq!(strip_steam_autostart(&out), None);
     }
 
     #[test]
