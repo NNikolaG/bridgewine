@@ -1,0 +1,81 @@
+Subject: [PATCH] kernelbase: Start steamwebhelper with software rendering in one process.
+
+Steam's CEF helper renders in a separate GPU process into a window owned
+by the browser process. winemac.drv cannot present that cross-process
+output (bug 56014), so the Steam window stays black. Steam does not
+forward its -cef-* options to steamwebhelper.exe, so add
+"--disable-gpu --single-process" when the top-level helper is created.
+BW_STEAMWEBHELPER_ARGS overrides the switches (empty turns it off).
+This replaces BridgeWine's steamwebhelper.exe wrapper, so no Steam file
+is changed.
+---
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index c58e977..506aa2f 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -520,6 +520,52 @@ done:
+     return ret;
+ }
+ 
++/***********************************************************************
++ *           steamwebhelper_cmdline
++ *
++ * Steam's CEF helper renders in a separate GPU process into a window owned by
++ * the browser process. The macOS driver cannot present such cross-process
++ * output (bug 56014) and the Steam window stays black, while Steam does not
++ * forward its -cef-* options to the helper. Start the top-level helper with
++ * software rendering in a single process instead. BW_STEAMWEBHELPER_ARGS
++ * overrides the switches; set it to an empty string to turn this off.
++ */
++static WCHAR *steamwebhelper_cmdline( const WCHAR *app_name, const WCHAR *cmd_line )
++{
++    static const WCHAR default_args[] = L"--disable-gpu --single-process";
++    const WCHAR *base, *rest;
++    WCHAR args[256], *ret;
++    DWORD len;
++    size_t size;
++
++    if (!(base = wcsrchr( app_name, '\\' ))) base = app_name;
++    else base++;
++    if (wcsicmp( base, L"steamwebhelper.exe" )) return NULL;
++    /* child processes (renderer, gpu, utility) are started with --type= */
++    if (wcsstr( cmd_line, L"--type=" )) return NULL;
++
++    len = GetEnvironmentVariableW( L"BW_STEAMWEBHELPER_ARGS", args, ARRAY_SIZE(args) );
++    if (!len && GetLastError() == ERROR_ENVVAR_NOT_FOUND) lstrcpyW( args, default_args );
++    else if (len >= ARRAY_SIZE(args)) return NULL;
++    if (!args[0] || wcsstr( cmd_line, args )) return NULL;
++
++    rest = cmd_line;
++    if (*rest == '"')
++    {
++        rest++;
++        while (*rest && *rest != '"') rest++;
++        if (*rest) rest++;
++    }
++    else while (*rest && *rest != ' ' && *rest != '\t') rest++;
++
++    size = lstrlenW( cmd_line ) + lstrlenW( args ) + 2;
++    if (!(ret = RtlAllocateHeap( GetProcessHeap(), 0, size * sizeof(WCHAR) ))) return NULL;
++    memcpy( ret, cmd_line, (rest - cmd_line) * sizeof(WCHAR) );
++    swprintf( ret + (rest - cmd_line), size - (rest - cmd_line), L" %s%s", args, rest );
++    TRACE( "%s -> %s\n", debugstr_w(cmd_line), debugstr_w(ret) );
++    return ret;
++}
++
+ /**********************************************************************
+  *           CreateProcessInternalW   (kernelbase.@)
+  */
+@@ -560,6 +606,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+         app_name = name;
+     }
+ 
++    if ((p = steamwebhelper_cmdline( app_name, tidy_cmdline )))
++    {
++        if (tidy_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, tidy_cmdline );
++        tidy_cmdline = p;
++    }
++
+     /* Warn if unsupported features are used */
+ 
+     if (flags & (IDLE_PRIORITY_CLASS | HIGH_PRIORITY_CLASS | REALTIME_PRIORITY_CLASS |
