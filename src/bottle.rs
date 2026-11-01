@@ -8,6 +8,7 @@ use std::process::{Command, ExitCode};
 
 use crate::doctor::find_wine_for;
 use crate::dxmt;
+use crate::dxvk;
 use crate::recipe::{Graphics, Recipe, Store, WineSource};
 use crate::wine_build;
 
@@ -545,8 +546,65 @@ pub fn cmd_steam_install(recipe: &Recipe, dry_run: bool) -> ExitCode {
     })())
 }
 
-pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
+const GRAPHICS_REG_FILE: &str = "bridgewine-graphics.reg";
+const GRAPHICS_REG_WIN: &str = r"C:\bridgewine-graphics.reg";
+
+/// DXVK DLL-ovi u bottle i override samo za exe igre (ostali prevodioci ga brisu).
+/// Vraca dodatak za `WINEDLLOVERRIDES` kad override ne moze per-app.
+fn prep_graphics(
+    wine: &str,
+    prefix: &Path,
+    recipe: &Recipe,
+    graphics: Graphics,
+    dry_run: bool,
+) -> Result<Option<String>, String> {
+    let dxvk = graphics == Graphics::Dxvk;
+    if dxvk {
+        let unpacked = dxvk::ensure(dry_run)?;
+        if !dry_run {
+            dxvk::install_bottle(&unpacked, prefix)?;
+        }
+    }
+    let exe = recipe
+        .game
+        .exe
+        .as_deref()
+        .and_then(|e| e.rsplit(['\\', '/']).next());
+    match (recipe.game.store, exe) {
+        (Store::Steam, Some(exe)) => {
+            if !dry_run {
+                let drive_c = prefix.join("drive_c");
+                fs::write(
+                    drive_c.join(GRAPHICS_REG_FILE),
+                    dxvk::app_overrides_reg(exe, dxvk),
+                )
+                .map_err(|e| format!("{}: {e}", drive_c.display()))?;
+            }
+            run_all(
+                &[Invocation {
+                    program: wine.into(),
+                    args: vec!["regedit".into(), "/S".into(), GRAPHICS_REG_WIN.into()],
+                    env: base_env(prefix),
+                }],
+                dry_run,
+            )?;
+            Ok(None)
+        }
+        _ if dxvk => Ok(Some(dxvk::env_overrides())),
+        _ => Ok(None),
+    }
+}
+
+/// `graphics` iz komandne linije ima prednost nad receptom.
+pub fn cmd_run(recipe: &Recipe, graphics: Option<Graphics>, dry_run: bool) -> ExitCode {
     finish((|| {
+        let graphics = graphics.unwrap_or(recipe.runtime.graphics);
+        if !graphics.supports(recipe.runtime.directx) {
+            return Err(format!(
+                "graphics = \"{graphics}\" ne pokriva DirectX {}",
+                recipe.runtime.directx
+            ));
+        }
         let wine = wine_or_err(recipe)?;
         let prefix = bottle_path(&home(), &recipe.game.id);
         if !dry_run && !bottle_exists(&prefix) {
@@ -555,20 +613,14 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
                 recipe.game.id
             ));
         }
-        if recipe.runtime.graphics == Graphics::Dxmt {
+        if graphics == Graphics::Dxmt {
             let app = wine_build::app_for(&wine).ok_or("ne znam gde je Wine runtime")?;
             dxmt::ensure(&app, dry_run)?;
             if !dry_run {
                 dxmt::sync_bottle(&app, &prefix)?;
             }
         }
-        if recipe.runtime.graphics == Graphics::Dxvk {
-            eprintln!(
-                "upozorenje: graphics = \"{}\" jos ne instaliramo automatski; koristi se ono sto je u bottle-u",
-                recipe.runtime.graphics
-            );
-        }
-        let inv = run_invocation(&wine, &prefix, recipe)?;
+        let mut inv = run_invocation(&wine, &prefix, recipe)?;
         if recipe.runtime.wine == WineSource::Winehq && !dry_run {
             prep_winehq(&wine, &prefix)?;
         }
@@ -576,6 +628,14 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
             prep_steam(&prefix)?;
         }
         prep_session(&wine, &prefix, dry_run)?;
+        if let Some(extra) = prep_graphics(&wine, &prefix, recipe, graphics, dry_run)? {
+            let o = inv.env.entry("WINEDLLOVERRIDES".into()).or_default();
+            if !o.is_empty() {
+                o.push(';');
+            }
+            o.push_str(&extra);
+        }
+        println!("grafika: {graphics}");
         run_all(&[inv], dry_run)
     })())
 }

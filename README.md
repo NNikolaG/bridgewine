@@ -35,6 +35,7 @@ bw runtime install         # WineHQ Wine u ~/Games/BridgeWine/runtimes (64-bitni
 bw bottle create aoe3-de   # Wine prefiks u ~/Games/BridgeWine/bottles/aoe3-de
 bw steam install aoe3-de   # skida i tiho instalira Windows Steam
 bw run aoe3-de             # pokrece igru kroz Steam (-applaunch 933110)
+bw run aoe3-de --graphics dxvk   # DXVK (Vulkan/MoltenVK) umesto DXMT-a, npr. kad je tekst u meniju isecen
 ```
 
 Ako Steam javi "Steam needs to be online" ili "http error 0", bottle nije
