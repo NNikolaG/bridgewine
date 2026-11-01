@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 
 pub const DXVK_VERSION: &str = "v1.10.3-20230507";
-const RELEASE_TAG: &str = "v1.10.3-20230507-repack";
 
 /// DLL-ovi koje DXVK zamenjuje.
 pub const DLLS: [&str; 3] = ["d3d11", "d3d10core", "dxgi"];
@@ -30,7 +29,7 @@ fn name() -> String {
 
 pub fn url() -> String {
     format!(
-        "https://github.com/Gcenx/DXVK-macOS/releases/download/{RELEASE_TAG}/{}.tar.gz",
+        "https://github.com/Gcenx/DXVK-macOS/releases/download/{DXVK_VERSION}/{}.tar.gz",
         name()
     )
 }
@@ -133,7 +132,7 @@ mod tests {
     fn url_points_at_full_release_with_dxgi() {
         assert_eq!(
             url(),
-            "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507.tar.gz"
+            "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507/dxvk-macOS-async-v1.10.3-20230507.tar.gz"
         );
     }
 
