@@ -5,6 +5,9 @@ late mixer wakeup under Rosetta 2 drains the stream ("Probable buffer
 underrun") and games like AoE3 DE crackle. Add MixQueueMs under
 HKCU\Software\Wine\DirectSound (also per app) and the
 WINEDSOUND_QUEUE_MS environment variable; unset keeps upstream behaviour.
+Each mixer pass stays capped at three periods: a longer pass can step over
+a whole short streaming buffer, the app misses its position notifications
+and the same chunk loops.
 ---
 diff --git a/dlls/dsound/dsound_main.c b/dlls/dsound/dsound_main.c
 index e2b9b81..54e8cbe 100644
@@ -51,21 +54,6 @@ index fc894b0..f6350a4 100644
  
  /*****************************************************************************
   * Predeclare the interface implementation structures
-diff --git a/dlls/dsound/mixer.c b/dlls/dsound/mixer.c
-index 127ec86..c79264b 100644
---- a/dlls/dsound/mixer.c
-+++ b/dlls/dsound/mixer.c
-@@ -1287,8 +1287,8 @@ static void DSOUND_PerformMix(DirectSoundDevice *device)
- 		LeaveCriticalSection(&device->mixlock);
- 		return;
- 	}
--	if (frames > device->frag_frames * 3)
--		frames = device->frag_frames * 3;
-+	if (frames > max(device->frag_frames * 3, device->ac_frames))
-+		frames = max(device->frag_frames * 3, device->ac_frames);
- 
- 	if (device->priolevel != DSSCL_WRITEPRIMARY) {
- 		void *buffer = NULL;
 diff --git a/dlls/dsound/primary.c b/dlls/dsound/primary.c
 index 3331b31..d117865 100644
 --- a/dlls/dsound/primary.c
