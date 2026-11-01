@@ -59,20 +59,6 @@ pub fn install_bottle(unpacked: &Path, prefix: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// MoltenVK-ove Metal argument buffere DXVK 1.10 brzo potrosi: AoE3 DE posle par
-/// minuta dobija stotine hiljada `VK_ERROR_OUT_OF_POOL_MEMORY: VkDescriptorPool
-/// exhausted` i prestane da reaguje. Bez argument buffera MoltenVK vezuje resurse
-/// direktno. Vrednost koju korisnik sam postavi ima prednost.
-pub const ENV: [(&str, &str); 1] = [("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "0")];
-
-/// Promenljive iz [`ENV`] koje korisnik nije sam postavio.
-pub fn env(user: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
-    ENV.iter()
-        .filter(|(k, _)| user(k).is_none())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
-}
-
 /// `WINEDLLOVERRIDES` deo za igre koje se ne pokrecu preko Steam-a.
 pub fn env_overrides() -> String {
     format!("{}=n,b", DLLS.join(","))
@@ -191,17 +177,5 @@ mod tests {
         assert!(off.contains("[-HKEY"));
         assert!(!off.contains("native"));
         assert_eq!(env_overrides(), "d3d11,d3d10core,dxgi=n,b");
-    }
-
-    #[test]
-    fn disables_argument_buffers_unless_user_set() {
-        assert_eq!(
-            env(|_| None),
-            [(
-                "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS".to_string(),
-                "0".to_string()
-            )]
-        );
-        assert!(env(|_| Some("1".into())).is_empty());
     }
 }
