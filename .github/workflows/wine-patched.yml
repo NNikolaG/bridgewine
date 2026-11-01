@@ -79,6 +79,7 @@ jobs:
         run: |
           file dist/x86_64-unix/ntdll.so | grep -q 'x86_64'
           file dist/x86_64-windows/wineboot.exe | grep -q 'PE32+'
+          file dist/x86_64-windows/kernelbase.dll | grep -q 'PE32+'
           codesign -v dist/x86_64-unix/ntdll.so
           cat dist/bw-release.txt
 

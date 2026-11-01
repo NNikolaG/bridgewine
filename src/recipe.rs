@@ -71,9 +71,11 @@ pub struct SteamOpts {
 #[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum CefWorkaround {
-    /// Nas wrapper/steamwebhelper.exe (`--disable-gpu --single-process`), Wine bug 56014.
+    /// Nas kernelbase patch (0004) pokrece helper sa `--disable-gpu --single-process`
+    /// (Wine bug 56014). Treba `patched = true`. `"wrapper"` je staro ime.
     #[default]
-    Wrapper,
+    #[serde(alias = "wrapper")]
+    Wine,
     /// Bez zaobilazenja (npr. kad Wine sam ispravno prikazuje CEF).
     None,
 }
@@ -470,12 +472,14 @@ d3d11 = "native,builtin"
     }
 
     #[test]
-    fn steam_cef_workaround_defaults_to_wrapper() {
+    fn steam_cef_workaround_defaults_to_wine() {
         let r = Recipe::parse(GOOD).unwrap();
-        assert_eq!(r.steam.cef_workaround, CefWorkaround::Wrapper);
+        assert_eq!(r.steam.cef_workaround, CefWorkaround::Wine);
         assert!(!r.runtime.patched);
         let r = Recipe::parse(&format!("{GOOD}\n[steam]\ncef_workaround = \"none\"\n")).unwrap();
         assert_eq!(r.steam.cef_workaround, CefWorkaround::None);
+        let r = Recipe::parse(&format!("{GOOD}\n[steam]\ncef_workaround = \"wrapper\"\n")).unwrap();
+        assert_eq!(r.steam.cef_workaround, CefWorkaround::Wine);
     }
 
     #[test]

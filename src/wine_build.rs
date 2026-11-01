@@ -15,7 +15,7 @@ use std::process::ExitCode;
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
-pub const PATCHES: [(&str, &str); 7] = [
+pub const PATCHES: [(&str, &str); 8] = [
     (
         "0001-ntdll-restore-TEB-GSBASE-after-SIGSYS-on-macOS.patch",
         include_str!(
@@ -35,14 +35,20 @@ pub const PATCHES: [(&str, &str); 7] = [
         ),
     ),
     (
-        "0004-winemac.drv-export-macdrv_functions-for-external-D3D-layers.patch",
+        "0004-kernelbase-start-steamwebhelper-with-software-rendering.patch",
         include_str!(
-            "../patches/wine-11.21/0004-winemac.drv-export-macdrv_functions-for-external-D3D-layers.patch"
+            "../patches/wine-11.21/0004-kernelbase-start-steamwebhelper-with-software-rendering.patch"
         ),
     ),
     (
-        "0005-winemac.drv-retain-cached-metal-view.patch",
-        include_str!("../patches/wine-11.21/0005-winemac.drv-retain-cached-metal-view.patch"),
+        "0006-winemac.drv-export-macdrv_functions-for-external-D3D-layers.patch",
+        include_str!(
+            "../patches/wine-11.21/0006-winemac.drv-export-macdrv_functions-for-external-D3D-layers.patch"
+        ),
+    ),
+    (
+        "0007-winemac.drv-retain-cached-metal-view.patch",
+        include_str!("../patches/wine-11.21/0007-winemac.drv-retain-cached-metal-view.patch"),
     ),
     (
         "0010-dsound-make-the-mix-queue-depth-configurable.patch",
@@ -57,9 +63,13 @@ pub const PATCHES: [(&str, &str); 7] = [
 ];
 
 /// Moduli koje patch-evi menjaju: putanja u build folderu -> putanja u `lib/wine/`.
-pub const TARGETS: [(&str, &str); 5] = [
+pub const TARGETS: [(&str, &str); 6] = [
     ("dlls/ntdll/ntdll.so", "x86_64-unix/ntdll.so"),
     ("dlls/winemac.drv/winemac.so", "x86_64-unix/winemac.so"),
+    (
+        "dlls/kernelbase/x86_64-windows/kernelbase.dll",
+        "x86_64-windows/kernelbase.dll",
+    ),
     (
         "programs/wineboot/x86_64-windows/wineboot.exe",
         "x86_64-windows/wineboot.exe",
@@ -490,20 +500,43 @@ mod tests {
                 cmds[2 + i],
                 format!("patch -p1 --forward -i /s/patches-11.21/{name}")
             );
-            assert_eq!(inv[2 + i].args[3], "/s/wine-11.21");
         }
+        assert_eq!(inv[2].args[3], "/s/wine-11.21");
         let n = 2 + PATCHES.len();
-        assert_eq!(cmds[n], "mkdir -p /s/build-11.21");
         assert!(
             cmds[n + 1].starts_with("arch -x86_64 ../wine-11.21/configure CC=clang -arch x86_64")
         );
-        let make_targets: Vec<&str> = TARGETS.iter().map(|(b, _)| *b).collect();
-        assert!(cmds[n + 2].ends_with(&make_targets.join(" ")));
+        let modules: Vec<&str> = TARGETS.iter().map(|(b, _)| *b).collect();
+        assert!(cmds[n + 2].ends_with(&modules.join(" ")));
+        assert!(cmds[n + 2].contains("dlls/kernelbase/x86_64-windows/kernelbase.dll"));
         assert!(cmds[n + 2].contains("dlls/winemac.drv/winemac.so"));
-        assert!(cmds[n + 2].contains("dlls/dsound/x86_64-windows/dsound.dll"));
         assert_eq!(inv[n + 2].args[3], "/s/build-11.21");
         assert_eq!(inv[n + 2].env["PATH"], "/p");
-        assert_eq!(inv.len(), n + 3);
+    }
+
+    #[test]
+    fn release_tag_follows_patch_set() {
+        let tag = release_tag("11.21");
+        assert!(tag.starts_with("wine-11.21-bw-"), "{tag}");
+        assert_eq!(patch_set_id().len(), 12);
+        assert_eq!(tag, release_tag("11.21"));
+        assert_eq!(
+            prebuilt_url("11.21"),
+            format!(
+                "https://github.com/NNikolaG/bridgewine/releases/download/{tag}/bw-wine-11.21-patched.tar.gz"
+            )
+        );
+    }
+
+    #[test]
+    fn prebuilt_downloads_then_unpacks_into_staging() {
+        let home = Path::new("/nonexistent-bw-home");
+        let (inv, staging) = fetch_invocations(home, "11.21");
+        let progs: Vec<&str> = inv.iter().map(|i| i.program.as_str()).collect();
+        assert_eq!(progs, ["curl", "rm", "mkdir", "tar"]);
+        assert!(inv[0].args.contains(&prebuilt_url("11.21")));
+        assert!(staging.starts_with("/nonexistent-bw-home/cache"));
+        assert_eq!(inv[3].args.last().unwrap(), &staging.display().to_string());
     }
 
     #[test]

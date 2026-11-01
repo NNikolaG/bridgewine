@@ -249,17 +249,14 @@ pub fn session_prep_invocations(wine: &str, prefix: &Path) -> Vec<Invocation> {
     ]
 }
 
-/// Nas wrapper (wrapper/steamwebhelper-wrapper.c), izgradjen sa
-/// `x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows`.
-pub const HELPER_WRAPPER: &[u8] = include_bytes!("../wrapper/steamwebhelper.exe");
 const HELPER: &str = "steamwebhelper.exe";
 const HELPER_REAL: &str = "steamwebhelper_real.exe";
 
 /// Steam-ov CEF helper crta u posebnom GPU procesu, a winemac.drv taj izlaz ne
 /// prikazuje (Wine bug 56014), pa je prozor crn. `-cef-*` flagovi steam.exe-a ne
-/// stizu do helpera, zato helper menjamo wrapperom koji pokrece pravi helper sa
-/// `--disable-gpu`. Steam pri azuriranju vraca original, pa ovo radimo pri svakom startu.
-pub const STEAM_ARGS: [&str; 3] = ["-no-cef-sandbox", "-cef-single-process", "-noverifyfiles"];
+/// stizu do helpera; zato nas kernelbase.dll (patch 0004) sam dodaje
+/// `--disable-gpu --single-process` kad Steam pokrene helper. Steam fajlovi ostaju netaknuti.
+pub const STEAM_ARGS: [&str; 2] = ["-no-cef-sandbox", "-cef-single-process"];
 const STEAM_DLL_OVERRIDES: &str = "gameoverlayrenderer,gameoverlayrenderer64=d";
 
 fn steam_dir(prefix: &Path) -> PathBuf {
@@ -269,7 +266,7 @@ fn steam_dir(prefix: &Path) -> PathBuf {
         .join("Steam")
 }
 
-/// Bilo koja verzija naseg wrappera: jedino on u sebi ima ime pravog helpera (UTF-16).
+/// Stari BridgeWine wrapper: jedino on u sebi ima ime pravog helpera (UTF-16).
 pub fn is_helper_wrapper(exe: &[u8]) -> bool {
     let needle: Vec<u8> = HELPER_REAL
         .encode_utf16()
@@ -278,31 +275,39 @@ pub fn is_helper_wrapper(exe: &[u8]) -> bool {
     exe.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Vraca true ako je helper upravo (ponovo) umotan. Bez Steam-ovog CEF foldera ne radi nista.
+/// Vraca originalni Steam helper ako ga je stari bw zamenio wrapperom.
+/// Vraca true ako je nesto promenjeno.
 ///
-/// Wrapper se nikad ne preimenuje u `_real` (inace pokrece sam sebe u krug); ako je
-/// `_real` nestao ili je i on wrapper, javljamo gresku umesto da pogadjamo.
-pub fn wrap_steam_helper(prefix: &Path) -> Result<bool, String> {
+/// Ako originala (`_real`) nema ili je i on wrapper, brisemo wrapper(e): Steam pri
+/// proveri fajlova sam ponovo skine helper koji nedostaje.
+pub fn restore_steam_helper(prefix: &Path) -> Result<bool, String> {
     let cef = steam_dir(prefix).join("bin").join("cef").join("cef.win64");
     let helper = cef.join(HELPER);
     let real = cef.join(HELPER_REAL);
-    let Ok(current) = fs::read(&helper) else {
-        return Ok(false);
-    };
-    let err = |e: std::io::Error| format!("{}: {e}", helper.display());
-    if !is_helper_wrapper(&current) {
-        // original (npr. posle Steam update-a) postaje _real
-        fs::rename(&helper, &real).map_err(err)?;
-    } else if !fs::read(&real).is_ok_and(|b| !is_helper_wrapper(&b)) {
-        return Err(format!(
-            "{} nedostaje ili je wrapper; vrati originalni Steam helper (npr. obrisi oba fajla i pokreni Steam bez -noverifyfiles)",
-            real.display()
-        ));
-    } else if current == HELPER_WRAPPER {
-        return Ok(false);
+    let wrapped = |p: &Path| fs::read(p).is_ok_and(|b| is_helper_wrapper(&b));
+    let err = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let real_ok = real.exists() && !wrapped(&real);
+    if wrapped(&helper) {
+        if real_ok {
+            fs::rename(&real, &helper).map_err(|e| err(&helper, e))?;
+        } else {
+            fs::remove_file(&helper).map_err(|e| err(&helper, e))?;
+            if real.exists() {
+                fs::remove_file(&real).map_err(|e| err(&real, e))?;
+            }
+        }
+        return Ok(true);
     }
-    fs::write(&helper, HELPER_WRAPPER).map_err(err)?;
-    Ok(true)
+    if real.exists() && (helper.exists() || !real_ok) {
+        // original je vec na mestu (Steam update), _real je visak
+        fs::remove_file(&real).map_err(|e| err(&real, e))?;
+        return Ok(true);
+    }
+    if real_ok {
+        fs::rename(&real, &helper).map_err(|e| err(&helper, e))?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Brise Chromium `Singleton*` lockove koje ostavi Steam koji je pao; sa njima novi
@@ -350,7 +355,7 @@ pub fn steam_installed(prefix: &Path) -> bool {
     steam_dir(prefix).join("steam.exe").is_file()
 }
 
-/// Da li je helper trenutno nas wrapper (Steam ga vraca pri azuriranju; `bw run` ponovo umota).
+/// Da li je helper i dalje stari BridgeWine wrapper (`bw run` vraca original).
 pub fn steam_helper_wrapped(prefix: &Path) -> bool {
     let helper = steam_dir(prefix).join("bin/cef/cef.win64").join(HELPER);
     fs::read(helper).is_ok_and(|b| is_helper_wrapper(&b))
@@ -364,9 +369,9 @@ pub fn steam_game_installed(prefix: &Path, app_id: u32) -> bool {
         .is_file()
 }
 
-fn prep_steam(prefix: &Path, cef: CefWorkaround) -> Result<(), String> {
-    if cef == CefWorkaround::Wrapper && wrap_steam_helper(prefix)? {
-        println!("steamwebhelper umotan (BridgeWine wrapper)");
+fn prep_steam(prefix: &Path) -> Result<(), String> {
+    if restore_steam_helper(prefix)? {
+        println!("vracen originalni steamwebhelper.exe (wrapper vise nije potreban)");
     }
     clear_cef_locks(prefix);
     let reg = prefix.join("user.reg");
@@ -438,7 +443,7 @@ fn prep_winehq(wine: &str, prefix: &Path, patched: bool) -> Result<(), String> {
     if let Some(app) = wine_build::app_for(wine) {
         if !wine_build::is_installed(&app) {
             eprintln!(
-                "upozorenje: runtime nema BridgeWine Wine module (igre sa zastitom padaju); pokreni `bw runtime install-patched` (ili `bw runtime build-patched`)"
+                "upozorenje: runtime nema BridgeWine Wine module (igre sa zastitom padaju, Steam prozor je crn); pokreni `bw runtime install-patched` (ili `bw runtime build-patched`)"
             );
         }
     }
@@ -462,6 +467,10 @@ pub fn run_invocation(wine: &str, prefix: &Path, recipe: &Recipe) -> Result<Invo
     }
     if !overrides.is_empty() {
         env.insert("WINEDLLOVERRIDES".into(), overrides);
+    }
+    if recipe.game.store == Store::Steam && recipe.steam.cef_workaround == CefWorkaround::None {
+        // prazno iskljucuje nas kernelbase patch za steamwebhelper
+        env.insert("BW_STEAMWEBHELPER_ARGS".into(), String::new());
     }
     let args = match (
         recipe.game.store,
@@ -701,7 +710,7 @@ pub fn run(recipe: &Recipe, graphics: Option<Graphics>, dry_run: bool) -> Result
         prep_winehq(&wine, &prefix, recipe.runtime.patched)?;
     }
     if recipe.game.store == Store::Steam && !dry_run {
-        prep_steam(&prefix, recipe.steam.cef_workaround)?;
+        prep_steam(&prefix)?;
     }
     prep_session(&wine, &prefix, dry_run)?;
     if let Some(extra) = prep_graphics(&wine, &prefix, recipe, graphics, dry_run)? {
@@ -862,7 +871,6 @@ dxgi = "native,builtin"
                 STEAM_EXE,
                 "-no-cef-sandbox",
                 "-cef-single-process",
-                "-noverifyfiles",
                 "-applaunch",
                 "933110"
             ]
@@ -911,60 +919,66 @@ dxgi = "native,builtin"
         ));
     }
 
-    #[test]
-    fn wraps_steam_helper_and_rewraps_after_update() {
-        let dir = std::env::temp_dir().join(format!("bw-cef-{}", std::process::id()));
+    fn cef_dir(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("bw-cef-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        assert!(!wrap_steam_helper(&dir).unwrap());
         let cef = steam_dir(&dir).join("bin/cef/cef.win64");
         fs::create_dir_all(&cef).unwrap();
-        fs::write(cef.join(HELPER), b"orig1").unwrap();
+        (dir, cef)
+    }
 
-        assert!(wrap_steam_helper(&dir).unwrap());
-        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), HELPER_WRAPPER);
-        assert_eq!(fs::read(cef.join(HELPER_REAL)).unwrap(), b"orig1");
-        assert!(!wrap_steam_helper(&dir).unwrap());
+    fn fake_wrapper() -> Vec<u8> {
+        let mut w = b"MZ old bw wrapper ".to_vec();
+        w.extend(HELPER_REAL.encode_utf16().flat_map(u16::to_le_bytes));
+        w
+    }
 
-        // Steam update vraca svoj helper.
-        fs::write(cef.join(HELPER), b"orig2").unwrap();
-        assert!(wrap_steam_helper(&dir).unwrap());
-        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), HELPER_WRAPPER);
-        assert_eq!(fs::read(cef.join(HELPER_REAL)).unwrap(), b"orig2");
+    #[test]
+    fn restores_original_helper_from_old_wrapper() {
+        let dir = std::env::temp_dir().join(format!("bw-cef-none-{}", std::process::id()));
+        assert!(!restore_steam_helper(&dir).unwrap());
+
+        let (dir, cef) = cef_dir("wrapped");
+        fs::write(cef.join(HELPER), fake_wrapper()).unwrap();
+        fs::write(cef.join(HELPER_REAL), b"steam helper").unwrap();
+        assert!(restore_steam_helper(&dir).unwrap());
+        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), b"steam helper");
+        assert!(!cef.join(HELPER_REAL).exists());
+        assert!(!restore_steam_helper(&dir).unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn older_wrapper_is_replaced_not_renamed_to_real() {
-        let dir = std::env::temp_dir().join(format!("bw-cef-old-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let cef = steam_dir(&dir).join("bin/cef/cef.win64");
-        fs::create_dir_all(&cef).unwrap();
-        let mut old_wrapper = b"MZ other build ".to_vec();
-        old_wrapper.extend(HELPER_REAL.encode_utf16().flat_map(u16::to_le_bytes));
-        fs::write(cef.join(HELPER), &old_wrapper).unwrap();
-        fs::write(cef.join(HELPER_REAL), b"real helper").unwrap();
-
-        assert!(wrap_steam_helper(&dir).unwrap());
-        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), HELPER_WRAPPER);
-        assert_eq!(fs::read(cef.join(HELPER_REAL)).unwrap(), b"real helper");
-
-        // _real je i sam wrapper: ne pogadjamo, javljamo gresku
-        fs::write(cef.join(HELPER_REAL), &old_wrapper).unwrap();
-        assert!(wrap_steam_helper(&dir).is_err());
-        fs::remove_file(cef.join(HELPER_REAL)).unwrap();
-        assert!(wrap_steam_helper(&dir).is_err());
+    fn drops_stale_real_after_steam_update() {
+        let (dir, cef) = cef_dir("updated");
+        fs::write(cef.join(HELPER), b"new steam helper").unwrap();
+        fs::write(cef.join(HELPER_REAL), b"old steam helper").unwrap();
+        assert!(restore_steam_helper(&dir).unwrap());
+        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), b"new steam helper");
+        assert!(!cef.join(HELPER_REAL).exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn shipped_wrapper_is_recognized() {
-        assert!(is_helper_wrapper(HELPER_WRAPPER));
+    fn removes_wrappers_when_original_is_gone() {
+        let (dir, cef) = cef_dir("gone");
+        fs::write(cef.join(HELPER), fake_wrapper()).unwrap();
+        fs::write(cef.join(HELPER_REAL), fake_wrapper()).unwrap();
+        assert!(restore_steam_helper(&dir).unwrap());
+        assert!(!cef.join(HELPER).exists());
+        assert!(!cef.join(HELPER_REAL).exists());
+
+        // samo _real (helper obrisan): vrati ga na mesto
+        fs::write(cef.join(HELPER_REAL), b"steam helper").unwrap();
+        assert!(restore_steam_helper(&dir).unwrap());
+        assert_eq!(fs::read(cef.join(HELPER)).unwrap(), b"steam helper");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn wrapper_detection_needs_utf16_name() {
+        assert!(is_helper_wrapper(&fake_wrapper()));
         assert!(!is_helper_wrapper(b"MZ steamwebhelper_real.exe in ASCII"));
-    }
-
-    #[test]
-    fn wrapper_is_a_pe_executable() {
-        assert_eq!(&HELPER_WRAPPER[..2], b"MZ");
     }
 
     #[test]

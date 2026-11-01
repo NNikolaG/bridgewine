@@ -22,8 +22,9 @@ windows_version = "win10"
 patched = true
 
 [steam]
-# Crn Steam prozor (Wine bug 56014): nas steamwebhelper wrapper. "none" kad Wine to sam resi.
-cef_workaround = "wrapper"
+# Crn Steam prozor (Wine bug 56014): nas kernelbase patch pokrece steamwebhelper sa
+# --disable-gpu --single-process; Steam fajlovi ostaju netaknuti. "none" kad Wine to sam resi.
+cef_workaround = "wine"
 
 [env]
 WINEMSYNC = "1"

@@ -57,7 +57,7 @@ Kratko. Komande i putanje doslovno. Sve sto nije potvrdjeno na M5 = "proveriti",
 ## Steam u bottle-u
 - Windows Steam instaler u bottle: `WINEPREFIX=<bottle> wine SteamSetup.exe`.
 - Putanja: `<bottle>/drive_c/Program Files (x86)/Steam/steam.exe`.
-- Crn/prazan Steam prozor = steamwebhelper (CEF). Probaj iskljuciti GPU ubrzanje u Steam podesavanjima ili `-cef-disable-gpu`. Proveriti na M5.
+- Crn/prazan Steam prozor = steamwebhelper (CEF) crta u posebnom GPU procesu, winemac.drv to ne prikazuje (Wine bug 56014). Resava nas kernelbase patch (`patches/wine-11.21/0004-*`): Wine sam dodaje `--disable-gpu --single-process` kad Steam pokrene helper. `BW_STEAMWEBHELPER_ARGS` menja te flagove (prazno = iskljuceno). Ne menjati Steam fajlove.
 - Login, kupovina, DRM: radi korisnik, ne mi.
 - Igra pokrenuta direktno preko exe iz recepta (`game.exe`) ili `steam.exe -applaunch <steam_app_id>`.
 
