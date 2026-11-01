@@ -97,7 +97,12 @@ pub fn cmd_install(dry_run: bool) -> ExitCode {
     if !dry_run {
         let _ = fs::create_dir_all(home.join("cache"));
     }
-    match run_all(&install_invocations(&home, WINEHQ_VERSION), dry_run) {
+    let mut steps = install_invocations(&home, WINEHQ_VERSION);
+    // tarball iz prethodnog pokusaja ne skidamo ponovo
+    if Path::new(&steps[0].args[2]).exists() {
+        steps.remove(0);
+    }
+    match run_all(&steps, dry_run) {
         Ok(()) => {
             println!("WineHQ {WINEHQ_VERSION}: {}", wine_bin(&app).display());
             ExitCode::SUCCESS
