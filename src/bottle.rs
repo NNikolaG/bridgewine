@@ -86,8 +86,17 @@ fn quote(s: &str) -> String {
 fn base_env(prefix: &Path) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     env.insert("WINEPREFIX".into(), prefix.display().to_string());
-    env.insert("WINEDEBUG".into(), "-all".into());
+    env.insert(
+        "WINEDEBUG".into(),
+        winedebug(std::env::var("WINEDEBUG").ok()),
+    );
     env
+}
+
+/// Tih Wine, osim ako korisnik sam postavi `WINEDEBUG` (npr. `warn+dsound` za dijagnozu).
+fn winedebug(user: Option<String>) -> String {
+    user.filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "-all".into())
 }
 
 fn wineserver(wine: &str, prefix: &Path, flag: &str) -> Invocation {
@@ -169,8 +178,23 @@ pub fn create_invocations(wine: &str, prefix: &Path, recipe: &Recipe) -> Vec<Inv
     v
 }
 
+/// MoltenVK ICD koji WineHQ bundle nosi u `share/vulkan/icd.d`.
+///
+/// Gcenx-ov ntdll.so sam dodaje ovaj folder Vulkan loader-u; vanilla Wine (nas
+/// ntdll.so iz `bw runtime build-patched`) ne, pa winevulkan nema drajver i
+/// Steam-ov CEF (ANGLE preko Vulkan-a) beskonacno pokusava da napravi GL kontekst.
+fn vulkan_env(wine: &str) -> Option<(String, String)> {
+    let icd = Path::new(wine)
+        .parent()?
+        .parent()?
+        .join("share/vulkan/icd.d/MoltenVK_icd.json");
+    icd.exists()
+        .then(|| ("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()))
+}
+
 pub fn steam_install_invocation(wine: &str, prefix: &Path, setup: &Path) -> Invocation {
     let mut env = base_env(prefix);
+    env.extend(vulkan_env(wine));
     env.insert("WINEMSYNC".into(), "1".into());
     Invocation {
         program: wine.into(),
@@ -432,6 +456,7 @@ fn prep_session(wine: &str, prefix: &Path, dry_run: bool) -> Result<(), String> 
 
 pub fn run_invocation(wine: &str, prefix: &Path, recipe: &Recipe) -> Result<Invocation, String> {
     let mut env = base_env(prefix);
+    env.extend(vulkan_env(wine));
     env.extend(recipe.env.clone());
     let mut overrides = recipe.dll_overrides_string();
     if recipe.game.store == Store::Steam {
@@ -998,6 +1023,27 @@ dxgi = "native,builtin"
         );
         assert_eq!(inv[1].program, "mv");
         assert_eq!(inv[1].args, ["-f", "/c/y.exe.part", "/c/y.exe"]);
+    }
+
+    #[test]
+    fn points_vulkan_loader_at_bundled_moltenvk() {
+        let dir = std::env::temp_dir().join(format!("bw-vk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let wine = dir.join("bin/wine").display().to_string();
+        assert_eq!(vulkan_env(&wine), None);
+        let icd = dir.join("share/vulkan/icd.d/MoltenVK_icd.json");
+        fs::create_dir_all(icd.parent().unwrap()).unwrap();
+        fs::write(&icd, "{}").unwrap();
+        let inv = run_invocation(&wine, Path::new("/p"), &recipe()).unwrap();
+        assert_eq!(inv.env["VK_ADD_DRIVER_FILES"], icd.display().to_string());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn user_winedebug_wins_over_quiet_default() {
+        assert_eq!(winedebug(None), "-all");
+        assert_eq!(winedebug(Some(String::new())), "-all");
+        assert_eq!(winedebug(Some("warn+dsound".into())), "warn+dsound");
     }
 
     #[test]

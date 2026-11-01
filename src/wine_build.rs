@@ -1,10 +1,12 @@
 //! Nasi Wine moduli: zvanicni Wine izvorni kod + patch-evi iz `patches/`.
 //!
 //! WineHQ 11.21 na macOS-u ne radi sa igrama cija zastita zove direktne syscall-ove
-//! i otvara svoj exe preko `\\.\GLOBALROOT\??\C:\...` (AoE3 DE), a pod Rosettom
-//! prijavljuje CPU od 1000 MHz, a DirectSound krcka jer audio tajmer kasni. Ispravke su u `patches/wine-<ver>/`; ovde ih
-//! primenjujemo na izvorni kod sa dl.winehq.org, gradimo samo izmenjene module
-//! (x86_64, preko Rosette) i menjamo ih u runtime-u. Originali ostaju pored kao `*.orig`.
+//! i otvara svoj exe preko `\\.\GLOBALROOT\??\C:\...` (AoE3 DE), pod Rosettom
+//! prijavljuje CPU od 1000 MHz, winemac.drv ne daje DXMT-u Metal view, a
+//! DirectSound krcka jer audio tajmer kasni. Ispravke su u `patches/wine-<ver>/`;
+//! ovde ih primenjujemo na izvorni kod sa dl.winehq.org, gradimo samo izmenjene
+//! module (x86_64, preko Rosette) i menjamo ih u runtime-u. Originali ostaju pored
+//! kao `*.orig`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,7 +15,7 @@ use std::process::ExitCode;
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
-pub const PATCHES: [(&str, &str); 6] = [
+pub const PATCHES: [(&str, &str); 8] = [
     (
         "0001-ntdll-restore-TEB-GSBASE-after-SIGSYS-on-macOS.patch",
         include_str!(
@@ -39,6 +41,16 @@ pub const PATCHES: [(&str, &str); 6] = [
         ),
     ),
     (
+        "0006-winemac.drv-export-macdrv_functions-for-external-D3D-layers.patch",
+        include_str!(
+            "../patches/wine-11.21/0006-winemac.drv-export-macdrv_functions-for-external-D3D-layers.patch"
+        ),
+    ),
+    (
+        "0007-winemac.drv-retain-cached-metal-view.patch",
+        include_str!("../patches/wine-11.21/0007-winemac.drv-retain-cached-metal-view.patch"),
+    ),
+    (
         "0010-dsound-make-the-mix-queue-depth-configurable.patch",
         include_str!(
             "../patches/wine-11.21/0010-dsound-make-the-mix-queue-depth-configurable.patch"
@@ -51,8 +63,9 @@ pub const PATCHES: [(&str, &str); 6] = [
 ];
 
 /// Moduli koje patch-evi menjaju: putanja u build folderu -> putanja u `lib/wine/`.
-pub const TARGETS: [(&str, &str); 5] = [
+pub const TARGETS: [(&str, &str); 6] = [
     ("dlls/ntdll/ntdll.so", "x86_64-unix/ntdll.so"),
+    ("dlls/winemac.drv/winemac.so", "x86_64-unix/winemac.so"),
     (
         "dlls/kernelbase/x86_64-windows/kernelbase.dll",
         "x86_64-windows/kernelbase.dll",
@@ -496,6 +509,7 @@ mod tests {
         let modules: Vec<&str> = TARGETS.iter().map(|(b, _)| *b).collect();
         assert!(cmds[n + 2].ends_with(&modules.join(" ")));
         assert!(cmds[n + 2].contains("dlls/kernelbase/x86_64-windows/kernelbase.dll"));
+        assert!(cmds[n + 2].contains("dlls/winemac.drv/winemac.so"));
         assert_eq!(inv[n + 2].args[3], "/s/build-11.21");
         assert_eq!(inv[n + 2].env["PATH"], "/p");
     }
