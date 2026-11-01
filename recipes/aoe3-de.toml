@@ -10,8 +10,10 @@ exe = "AoE3DE_s.exe"
 [runtime]
 # 64-bitni Steam klijent (2026+) pada na GPTK-ovom Wine 7.7 (nema BCrypt pseudo-handle),
 # pa bottle koristi WineHQ (`bw runtime install`). D3DMetal ide samo uz GPTK Wine.
+# wined3d (OpenGL 4.1) nema D3D11 FL11 ("video hardware does not support DirectX 11"),
+# pa D3D11 ide preko DXMT-a (Metal), koji bw sam instalira u runtime.
 wine = "winehq"          # gptk | winehq | system
-graphics = "wined3d"     # d3dmetal | dxmt | dxvk | wined3d
+graphics = "dxmt"        # d3dmetal | dxmt | dxvk | wined3d
 directx = 11
 windows_version = "win10"
 

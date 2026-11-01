@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use crate::doctor::find_wine_for;
+use crate::dxmt;
 use crate::recipe::{Graphics, Recipe, Store, WineSource};
 use crate::wine_build;
 
@@ -535,7 +536,11 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
                 recipe.game.id
             ));
         }
-        if matches!(recipe.runtime.graphics, Graphics::Dxvk | Graphics::Dxmt) {
+        if recipe.runtime.graphics == Graphics::Dxmt {
+            let app = wine_build::app_for(&wine).ok_or("ne znam gde je Wine runtime")?;
+            dxmt::ensure(&app, dry_run)?;
+        }
+        if recipe.runtime.graphics == Graphics::Dxvk {
             eprintln!(
                 "upozorenje: graphics = \"{}\" jos ne instaliramo automatski; koristi se ono sto je u bottle-u",
                 recipe.runtime.graphics

@@ -2,6 +2,7 @@
 
 mod bottle;
 mod doctor;
+mod dxmt;
 mod recipe;
 mod runtime;
 mod wine_build;
