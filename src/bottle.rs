@@ -70,8 +70,9 @@ impl Invocation {
 }
 
 fn quote(s: &str) -> String {
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-_./=,:".contains(c))
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=,:".contains(c))
     {
         s.to_string()
     } else {
@@ -172,6 +173,62 @@ pub fn steam_install_invocation(wine: &str, prefix: &Path, setup: &Path) -> Invo
         args: vec![setup.display().to_string(), "/S".into()],
         env,
     }
+}
+
+const TCPIP_PARAMS: &str = r"HKLM\System\CurrentControlSet\Services\Tcpip\Parameters";
+
+/// Priprema Wine sesije pre Steam-a.
+///
+/// Steam updater (WinHTTP) uvek radi WPAD auto-proxy detekciju: `wpad.<Domain>` kao
+/// DNS-only upit (`DnsQuery`), mimo /etc/hosts i mDNS-a. `Domain` Wine uzima iz macOS
+/// hostname-a (`MacBook.local` -> `local`), a mnogi DNS serveri (npr. ISP) `.local` upite
+/// tiho odbacuju, pa svaki upit visi ~135 s i Steam javi "needs to be online to update".
+/// Sa praznim `Domain` FQDN nema tacku i WinHTTP preskace DNS deo detekcije.
+///
+/// wineboot pri svakom startu sesije ponovo upisuje `Domain`, zato: `wineserver -p30`
+/// drzi sesiju zivom, `wineboot` zavrsi svoje, pa tek onda brisemo `Domain`.
+pub fn session_prep_invocations(wine: &str, prefix: &Path) -> Vec<Invocation> {
+    let env = base_env(prefix);
+    vec![
+        Invocation {
+            program: wineserver_for(wine),
+            args: vec!["-p30".into()],
+            env: env.clone(),
+        },
+        Invocation {
+            program: wine.into(),
+            args: vec!["wineboot".into()],
+            env: env.clone(),
+        },
+        Invocation {
+            program: wine.into(),
+            args: [
+                "reg",
+                "add",
+                TCPIP_PARAMS,
+                "/v",
+                "Domain",
+                "/t",
+                "REG_SZ",
+                "/d",
+                "",
+                "/f",
+            ]
+            .map(String::from)
+            .to_vec(),
+            env,
+        },
+    ]
+}
+
+/// Pokrece pripremu sesije; `wineserver -p` ne uspe ako sesija vec radi, i to je u redu.
+fn prep_session(wine: &str, prefix: &Path, dry_run: bool) -> Result<(), String> {
+    let prep = session_prep_invocations(wine, prefix);
+    println!("$ {}", prep[0].display());
+    if !dry_run {
+        let _ = prep[0].command().status();
+    }
+    run_all(&prep[1..], dry_run)
 }
 
 pub fn run_invocation(wine: &str, prefix: &Path, recipe: &Recipe) -> Result<Invocation, String> {
@@ -289,6 +346,7 @@ pub fn cmd_steam_install(recipe: &Recipe, dry_run: bool) -> ExitCode {
                 }
             }
         }
+        prep_session(&wine, &prefix, dry_run)?;
         run_all(&[steam_install_invocation(&wine, &prefix, &setup)], dry_run)?;
         println!(
             "Steam instaliran. Sledece: `bw run {}`, uloguj se i instaliraj igru u Steamu.",
@@ -315,6 +373,7 @@ pub fn cmd_run(recipe: &Recipe, dry_run: bool) -> ExitCode {
             );
         }
         let inv = run_invocation(&wine, &prefix, recipe)?;
+        prep_session(&wine, &prefix, dry_run)?;
         run_all(&[inv], dry_run)
     })())
 }
@@ -464,6 +523,30 @@ dxgi = "native,builtin"
         assert_eq!(inv.env["WINEMSYNC"], "1");
         assert_eq!(inv.env["WINEDLLOVERRIDES"], "dxgi=native,builtin");
         assert_eq!(inv.env["WINEPREFIX"], "/p");
+    }
+
+    #[test]
+    fn session_prep_clears_dns_domain_after_wineboot() {
+        let inv = session_prep_invocations("/w/wine64", Path::new("/p"));
+        assert_eq!(inv[0].program, "/w/wineserver");
+        assert_eq!(inv[0].args, ["-p30"]);
+        assert_eq!(inv[1].args, ["wineboot"]);
+        assert_eq!(
+            inv[2].args,
+            [
+                "reg",
+                "add",
+                TCPIP_PARAMS,
+                "/v",
+                "Domain",
+                "/t",
+                "REG_SZ",
+                "/d",
+                "",
+                "/f"
+            ]
+        );
+        assert!(inv.iter().all(|i| i.env["WINEPREFIX"] == "/p"));
     }
 
     #[test]
