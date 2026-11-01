@@ -1,0 +1,26 @@
+Subject: [PATCH] ntdll: Restore the TEB GSBASE in sigsys_handler on macOS.
+
+init_handler() switches GSBASE to the pthread TSD, but unlike the other
+handlers sigsys_handler() never calls leave_handler(), so it returns into
+__wine_syscall_dispatcher with GSBASE still pointing at the pthread TSD.
+The dispatcher reads %gs:0x30 as the TEB, gets NULL and faults, and the
+direct syscall fails with STATUS_ACCESS_VIOLATION.
+
+Seen with games whose protection issues raw syscalls (Age of Empires II/III
+Definitive Edition, NtAllocateVirtualMemory, SSN 0x18).
+---
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 7bff70b..72eb861 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2608,6 +2608,10 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+         frame->restore_flags |= CONTEXT_CONTROL;
+     }
+     RIP_sig(sigcontext) = (ULONG64)__wine_syscall_dispatcher_prolog_end_ptr;
++#ifdef __APPLE__
++    /* init_handler() switched GSBASE to the pthread TSD; the dispatcher expects the TEB. */
++    _thread_set_tsd_base( (uint64_t)data->teb );
++#endif
+ }
+ #endif
+ 
