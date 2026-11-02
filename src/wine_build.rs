@@ -3,7 +3,8 @@
 //! WineHQ 11.21 na macOS-u ne radi sa igrama cija zastita zove direktne syscall-ove
 //! i otvara svoj exe preko `\\.\GLOBALROOT\??\C:\...` (AoE3 DE), pod Rosettom
 //! prijavljuje CPU od 1000 MHz, winemac.drv ne daje DXMT-u Metal view, a
-//! DirectSound krcka jer audio tajmer kasni. Ispravke su u `patches/wine-<ver>/`;
+//! DirectSound krcka jer audio tajmer kasni, a pod Rosettom MXCSR, XGETBV, debug
+//! registri i W|X stranice traze ispravke iz CrossOver-ovog izvornog koda. Ispravke su u `patches/wine-<ver>/`;
 //! ovde ih primenjujemo na izvorni kod sa dl.winehq.org, gradimo samo izmenjene
 //! module (x86_64, preko Rosette) i menjamo ih u runtime-u. Originali ostaju pored
 //! kao `*.orig`.
@@ -15,7 +16,7 @@ use std::process::ExitCode;
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
-pub const PATCHES: [(&str, &str); 8] = [
+pub const PATCHES: [(&str, &str); 12] = [
     (
         "0001-ntdll-restore-TEB-GSBASE-after-SIGSYS-on-macOS.patch",
         include_str!(
@@ -59,6 +60,22 @@ pub const PATCHES: [(&str, &str); 8] = [
     (
         "0011-winecoreaudio-keep-the-audio-timer-on-time.patch",
         include_str!("../patches/wine-11.21/0011-winecoreaudio-keep-the-audio-timer-on-time.patch"),
+    ),
+    (
+        "0012-ntdll-use-the-real-MXCSR-in-signal-contexts-under-Rosetta.patch",
+        include_str!("../patches/wine-11.21/0012-ntdll-use-the-real-MXCSR-in-signal-contexts-under-Rosetta.patch"),
+    ),
+    (
+        "0013-ntdll-emulate-XGETBV-and-skip-RDSSP-under-Rosetta.patch",
+        include_str!("../patches/wine-11.21/0013-ntdll-emulate-XGETBV-and-skip-RDSSP-under-Rosetta.patch"),
+    ),
+    (
+        "0014-ntdll-fake-success-when-setting-debug-registers-under-Rosetta.patch",
+        include_str!("../patches/wine-11.21/0014-ntdll-fake-success-when-setting-debug-registers-under-Rosetta.patch"),
+    ),
+    (
+        "0015-ntdll-recover-from-spurious-Rosetta-faults-on-wx-pages.patch",
+        include_str!("../patches/wine-11.21/0015-ntdll-recover-from-spurious-Rosetta-faults-on-wx-pages.patch"),
     ),
 ];
 

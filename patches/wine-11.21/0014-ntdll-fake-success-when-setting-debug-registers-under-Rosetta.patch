@@ -1,0 +1,41 @@
+Subject: [PATCH] ntdll: Fake success when setting debug registers under Rosetta.
+
+Rosetta 2 cannot set hardware debug registers, so NtSetContextThread with
+CONTEXT_DEBUG_REGISTERS fails with STATUS_UNSUCCESSFUL. Some programs and
+their protection retry or give up on that. Report success, as CrossOver does,
+for both 64-bit and 32-bit contexts.
+
+Ported from CrossOver 26.3 sources (CW HACK 22131).
+(c) CodeWeavers, Inc.; LGPL-2.1-or-later.
+---
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 4877f61..5ce711e 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -1015,7 +1015,11 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+         ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+ #ifdef __APPLE__
+         if ((flags & CONTEXT_DEBUG_REGISTERS) && (ret == STATUS_UNSUCCESSFUL))
+-            WARN_(seh)( "Setting debug registers is not supported under Rosetta\n" );
++        {
++            /* Programs (often their protection) retry or bail out on failure. */
++            WARN_(seh)( "Setting debug registers is not supported under Rosetta, faking success\n" );
++            ret = STATUS_SUCCESS;
++        }
+ #endif
+         if (ret || !self) return ret;
+         if (flags & CONTEXT_DEBUG_REGISTERS)
+@@ -1246,6 +1250,13 @@ NTSTATUS set_thread_wow64_context( HANDLE handle, const void *ctx, ULONG size )
+     if (!self)
+     {
+         NTSTATUS ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
++#ifdef __APPLE__
++        if ((flags & CONTEXT_I386_DEBUG_REGISTERS) && (ret == STATUS_UNSUCCESSFUL))
++        {
++            WARN_(seh)( "Setting debug registers is not supported under Rosetta, faking success\n" );
++            ret = STATUS_SUCCESS;
++        }
++#endif
+         if (ret || !self) return ret;
+         if (flags & CONTEXT_I386_DEBUG_REGISTERS)
+         {
