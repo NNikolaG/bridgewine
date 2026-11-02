@@ -1,0 +1,39 @@
+Subject: [PATCH] ntdll: Recover from spurious Rosetta faults on W|X and X pages.
+
+Under Rosetta 2 a write to a page that is both writable and executable, or
+an execution from an executable page, can fault although the protection
+allows it (Rosetta keeps stale state for pages whose code it translated).
+Wine turned that into an access violation for the program. Toggle the exec
+bit to make Rosetta drop its state and resume.
+
+Ported from CrossOver 26.3 sources (CW Hack 24945, 25719).
+(c) CodeWeavers, Inc.; LGPL-2.1-or-later.
+---
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index b61da59..7049ef9 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4287,6 +4287,23 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+         WARN( "treating read fault in a readable page as a write fault, addr %p\n", addr );
+         err = EXCEPTION_WRITE_FAULT;
+     }
++
++    /* Rosetta can raise spurious write faults on pages that are writable and
++     * executable, and exec faults on executable pages (e.g. after code on them
++     * was translated). Toggling exec makes Rosetta drop its stale state. */
++    if ((err == EXCEPTION_WRITE_FAULT &&
++         (get_unix_prot( vprot ) & (PROT_WRITE | PROT_EXEC)) == (PROT_WRITE | PROT_EXEC)) ||
++        (err == EXCEPTION_EXECUTE_FAULT && (get_unix_prot( vprot ) & PROT_EXEC)))
++    {
++        FIXME( "spurious %s fault on a %s page, addr %p\n",
++               err == EXCEPTION_WRITE_FAULT ? "write" : "exec",
++               err == EXCEPTION_WRITE_FAULT ? "w|x" : "x", addr );
++        mprotect_range( page, host_page_size, 0, VPROT_EXEC );
++        mprotect_range( page, host_page_size, VPROT_EXEC, 0 );
++        mutex_unlock( &virtual_mutex );
++        rec->ExceptionCode = STATUS_SUCCESS;
++        return STATUS_SUCCESS;
++    }
+ #endif
+ 
+     if (!is_inside_signal_stack( data, stack ) && (vprot & VPROT_GUARD))

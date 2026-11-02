@@ -1,0 +1,139 @@
+Subject: [PATCH] ntdll: Emulate XGETBV and skip RDSSP under Rosetta.
+
+Rosetta 2 raises #UD for XGETBV (XCR0) and, on older macOS, for the CET
+RDSSPD/RDSSPQ instruction, which is a NOP when shadow stacks are off. Handle
+both in the signal handler and resume, instead of raising
+EXCEPTION_ILLEGAL_INSTRUCTION into the program, which costs a full exception
+round trip under Rosetta (~25-30 us). XGETBV returns the same feature mask
+that the XState configuration reports.
+
+Also log, with WINEDEBUG=warn+seh, the bytes of the first 32 distinct
+illegal instructions, so we can see which instruction a program keeps
+faulting on.
+
+Ported from CrossOver 26.3 sources (CW HACK 20186, 23427).
+(c) CodeWeavers, Inc.; LGPL-2.1-or-later.
+---
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index d30dc76..4877f61 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -1781,6 +1781,102 @@ NTSTATUS WINAPI NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status
+ }
+ 
+ 
++#ifdef __APPLE__
++/***********************************************************************
++ *           log_illegal_instr
++ *
++ * Log the bytes of the first few distinct illegal instructions, so we can
++ * tell which instruction a program keeps faulting on under Rosetta.
++ */
++static void log_illegal_instr( CONTEXT *context )
++{
++    static ULONG_PTR seen[32];
++    static LONG count;
++    BYTE instr[8] = {0};
++    unsigned int i, n;
++
++    if (!WARN_ON(seh) || count >= (LONG)ARRAY_SIZE(seen)) return;
++    for (i = 0; i < ARRAY_SIZE(seen); i++) if (seen[i] == context->Rip) return;
++    if ((n = InterlockedIncrement( &count ) - 1) >= ARRAY_SIZE(seen)) return;
++    seen[n] = context->Rip;
++    virtual_uninterrupted_read_memory( (BYTE *)context->Rip, instr, sizeof(instr) );
++    WARN_(seh)( "illegal instruction at %p: %02x %02x %02x %02x %02x %02x %02x %02x\n",
++                (void *)context->Rip, instr[0], instr[1], instr[2], instr[3],
++                instr[4], instr[5], instr[6], instr[7] );
++}
++
++/***********************************************************************
++ *           handle_cet_nop
++ *
++ * Skip the Intel CET RDSSPD/RDSSPQ instruction, which is a NOP when shadow
++ * stacks are disabled. Rosetta on Big Sur faults on it; Monterey fixed it.
++ */
++static BOOL handle_cet_nop( ucontext_t *sigcontext, CONTEXT *context )
++{
++    BYTE instr[16];
++    unsigned int i, prefix_count = 0;
++    unsigned int len = virtual_uninterrupted_read_memory( (BYTE *)context->Rip, instr, sizeof(instr) );
++
++    for (i = 0; i < len; i++) switch (instr[i])
++    {
++    /* instruction prefixes */
++    case 0x2e:  /* %cs: */
++    case 0x36:  /* %ss: */
++    case 0x3e:  /* %ds: */
++    case 0x26:  /* %es: */
++    case 0x40: case 0x41: case 0x42: case 0x43:  /* rex */
++    case 0x44: case 0x45: case 0x46: case 0x47:
++    case 0x48: case 0x49: case 0x4a: case 0x4b:
++    case 0x4c: case 0x4d: case 0x4e: case 0x4f:
++    case 0x64:  /* %fs: */
++    case 0x65:  /* %gs: */
++    case 0x66:  /* opcode size */
++    case 0x67:  /* addr size */
++    case 0xf0:  /* lock */
++    case 0xf2:  /* repne */
++    case 0xf3:  /* repe */
++        if (++prefix_count >= 15) return FALSE;
++        continue;
++    case 0x0f:  /* extended instruction */
++        if (i == len - 1 || instr[i + 1] != 0x1e) return FALSE;
++        /* RDSSPD/RDSSPQ: (prefixes) 0f 1e (modrm) */
++        RIP_sig(sigcontext) += prefix_count + 3;
++        TRACE_(seh)( "skipped RDSSPD/RDSSPQ instruction\n" );
++        return TRUE;
++    default:
++        return FALSE;
++    }
++    return FALSE;
++}
++
++/***********************************************************************
++ *           emulate_xgetbv
++ *
++ * Emulate XGETBV for XCR0. Rosetta raises #UD for it, while programs that
++ * use it on real hardware expect a value.
++ */
++static BOOL emulate_xgetbv( ucontext_t *sigcontext, CONTEXT *context )
++{
++    BYTE instr[3];
++    unsigned int len = virtual_uninterrupted_read_memory( (BYTE *)context->Rip, instr, sizeof(instr) );
++    UINT64 xcr0;
++
++    /* a prefixed xgetbv is illegal, so no need to check for prefixes */
++    if (len < 3 || instr[0] != 0x0f || instr[1] != 0x01 || instr[2] != 0xd0 ||
++        (RCX_sig(sigcontext) & 0xffffffff) != 0 /* only xcr0 */)
++        return FALSE;
++
++    /* report the same features we report through the XState configuration */
++    xcr0 = user_shared_data->XState.EnabledFeatures;
++    if (!xcr0) xcr0 = (1 << XSTATE_LEGACY_FLOATING_POINT) | (1 << XSTATE_LEGACY_SSE);
++    RAX_sig(sigcontext) = (DWORD)xcr0;
++    RDX_sig(sigcontext) = (DWORD)(xcr0 >> 32);
++    RIP_sig(sigcontext) += 3;
++    TRACE_(seh)( "emulated an XGETBV instruction\n" );
++    return TRUE;
++}
++#endif
++
+ /***********************************************************************
+  *           is_privileged_instr
+  *
+@@ -2265,6 +2361,15 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+         rec.ExceptionCode = EXCEPTION_ARRAY_BOUNDS_EXCEEDED;
+         break;
+     case TRAP_x86_PRIVINFLT:   /* Invalid opcode exception */
++#ifdef __APPLE__
++        if (is_rosetta2 && (handle_cet_nop( sigcontext, &context.c ) ||
++                            emulate_xgetbv( sigcontext, &context.c )))
++        {
++            leave_handler( data, sigcontext );
++            return;
++        }
++        log_illegal_instr( &context.c );
++#endif
+         rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
+         break;
+     case TRAP_x86_STKFLT:  /* Stack fault */

@@ -1,0 +1,107 @@
+Subject: [PATCH] ntdll: Use the real MXCSR in signal contexts under Rosetta.
+
+Rosetta 2 reports a stale MXCSR in the signal context; inside the handler
+the register itself still holds the interrupted code's value. Wine copies the
+signal context into the exception CONTEXT, so every exception that a program
+continues from (NtContinue) reset MXCSR: FTZ/DAZ and the rounding mode set by
+the program were lost. With a program that raises thousands of exceptions per
+second that also means slow denormal math in whatever thread runs next.
+
+For SIGSYS (raw syscalls) Rosetta restores the stale value even if the
+context is fixed, so the real value is reloaded in a small thunk before the
+syscall dispatcher saves the user state.
+
+Ported from CrossOver 26.3 sources (CW Hack 24256, 24265), adapted to the
+upstream GSBASE switching on macOS.
+(c) CodeWeavers, Inc.; LGPL-2.1-or-later.
+---
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 72eb861..d30dc76 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -89,6 +89,12 @@ WINE_DECLARE_DEBUG_CHANNEL(seh);
+ 
+ #include "dwarf.h"
+ 
++#ifdef __APPLE__
++#include <sys/sysctl.h>
++/* Set once at startup: sysctl is not async-signal-safe. */
++static BOOL is_rosetta2;
++#endif
++
+ static USHORT cs32_sel;  /* selector for %cs in 32-bit mode */
+ static USHORT cs64_sel;  /* selector for %cs in 64-bit mode */
+ static USHORT ds64_sel;  /* selector for %ds/%es/%ss in 64-bit mode */
+@@ -854,6 +860,12 @@ static void save_context( struct thread_data *data, struct xcontext *xcontext,
+ 
+         context->ContextFlags |= CONTEXT_FLOATING_POINT;
+         memcpy( &context->FltSave, FPU_sig(sigcontext), sizeof(context->FltSave) );
++#ifdef __APPLE__
++        /* Rosetta reports a stale mxcsr in the signal context, but the register
++         * itself still holds the interrupted code's value inside the handler. */
++        if (is_rosetta2)
++            __asm__ volatile( "stmxcsr %0" : "=m" (context->FltSave.MxCsr) );
++#endif
+         context->MxCsr = context->FltSave.MxCsr;
+         if (xstate_extended_features && (xs = XState_sig(FPU_sig(sigcontext))))
+         {
+@@ -2570,6 +2582,18 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+ }
+ 
+ 
++#ifdef __APPLE__
++/* Reload the real mxcsr (stashed in amd64_thread_data) before the syscall
++ * dispatcher saves the user state; see sigsys_handler(). */
++extern void __restore_mxcsr_thunk(void);
++__ASM_GLOBAL_FUNC( __restore_mxcsr_thunk,
++                   "pushq %rcx\n\t"
++                   "movq %gs:0x30,%rcx\n\t"
++                   "ldmxcsr 0x33c(%rcx)\n\t"  /* amd64_thread_data()->mxcsr */
++                   "popq %rcx\n\t"
++                   "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_prolog_end") );
++#endif
++
+ #if defined(__APPLE__) || defined(__linux__)
+ /**********************************************************************
+  *		sigsys_handler
+@@ -2611,6 +2635,24 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+ #ifdef __APPLE__
+     /* init_handler() switched GSBASE to the pthread TSD; the dispatcher expects the TEB. */
+     _thread_set_tsd_base( (uint64_t)data->teb );
++
++    /* Rosetta puts a stale mxcsr into the signal context and restores it on
++     * return even if we fix it there, so reload the real one in a thunk. */
++    if (is_rosetta2 && FPU_sig(sigcontext))
++    {
++        XMM_SAVE_AREA32 fpu;
++        unsigned int direct_mxcsr;
++
++        __asm__ volatile( "stmxcsr %0" : "=m" (direct_mxcsr) );
++        memcpy( &fpu, FPU_sig(sigcontext), sizeof(fpu) );
++        if (direct_mxcsr != fpu.MxCsr)
++        {
++            fpu.MxCsr = direct_mxcsr;
++            memcpy( FPU_sig(sigcontext), &fpu, sizeof(fpu) );
++            amd64_thread_data( data )->mxcsr = direct_mxcsr;
++            RIP_sig(sigcontext) = (ULONG64)__restore_mxcsr_thunk;
++        }
++    }
+ #endif
+ }
+ #endif
+@@ -2796,6 +2838,15 @@ void signal_init_process( TEB *teb )
+     alloc_syscall_frame( (frame_size + 63) & ~63 );
+     signal_alloc_thread( teb );
+ 
++#ifdef __APPLE__
++    {
++        int translated = 0;
++        size_t size = sizeof(translated);
++        if (sysctlbyname( "sysctl.proc_translated", &translated, &size, NULL, 0 ) == -1) translated = 0;
++        is_rosetta2 = translated;
++    }
++#endif
++
+     sig_act.sa_mask = server_block_set;
+     sig_act.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+ 

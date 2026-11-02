@@ -90,7 +90,24 @@ fn base_env(prefix: &Path) -> BTreeMap<String, String> {
         "WINEDEBUG".into(),
         winedebug(std::env::var("WINEDEBUG").ok()),
     );
+    // msync (patch 0016) je opciono: `WINEMSYNC=1 bw ...`. Wineserver i svi procesi
+    // moraju imati isti WINEMSYNC, inace se proces odmah ugasi ("Server is running
+    // with WINEMSYNC"), pa ga postavljamo svuda, a ne u receptu.
+    env.insert(
+        "WINEMSYNC".into(),
+        winemsync(std::env::var("WINEMSYNC").ok()),
+    );
     env
+}
+
+/// AoE3 sa msync-om nije brzi, a 1 od 4 starta je pao, pa je podrazumevano iskljuceno.
+fn winemsync(user: Option<String>) -> String {
+    if user.as_deref() == Some("1") {
+        "1"
+    } else {
+        "0"
+    }
+    .into()
 }
 
 /// Tih Wine, osim ako korisnik sam postavi `WINEDEBUG` (npr. `warn+dsound` za dijagnozu).
@@ -195,7 +212,6 @@ fn vulkan_env(wine: &str) -> Option<(String, String)> {
 pub fn steam_install_invocation(wine: &str, prefix: &Path, setup: &Path) -> Invocation {
     let mut env = base_env(prefix);
     env.extend(vulkan_env(wine));
-    env.insert("WINEMSYNC".into(), "1".into());
     Invocation {
         program: wine.into(),
         args: vec![setup.display().to_string(), "/S".into()],
@@ -788,6 +804,13 @@ dxgi = "native,builtin"
         fs::create_dir_all(dir.join("drive_c")).unwrap();
         assert!(bottle_exists(&dir));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn msync_is_opt_in() {
+        assert_eq!(winemsync(None), "0");
+        assert_eq!(winemsync(Some("0".into())), "0");
+        assert_eq!(winemsync(Some("1".into())), "1");
     }
 
     #[test]
