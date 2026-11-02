@@ -27,7 +27,6 @@ patched = true
 cef_workaround = "wine"
 
 [env]
-WINEMSYNC = "1"
 MTL_HUD_ENABLED = "0"    # 1 za Metal HUD sa FPS-om
 # Zvuk ide preko DirectSound-a; nas dsound patch drzi 80 ms u redu umesto ~40 ms,
 # pa zakasnelo budjenje miksera pod Rosettom ne pravi rupe (krckanje).

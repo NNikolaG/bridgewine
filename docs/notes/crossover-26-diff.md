@@ -40,9 +40,15 @@ Preneseno u `0016` na 11.21: `dlls/ntdll/unix/msync.c`, `server/msync.c`, kuke u
 `linux_wait_objs` sa `WAIT_TYPE`, i izlaz niti ne zove `close()` na alert "fd" (pod
 msync-om to je indeks objekta, CrossOver tu zatvara pogresan fd).
 
-Ukljucuje se sa `WINEMSYNC=1`; `bw` ga stavlja svim procesima (wineserver i svaki
-proces moraju se slagati). Pre prvog pokretanja: `wineserver -k` (stari server ima
-stari protokol).
+Opciono: `WINEMSYNC=1 bw ...` (podrazumevano 0); `bw` istu vrednost daje svim
+procesima, jer se wineserver i svaki proces moraju slagati. Pre prvog pokretanja:
+`wineserver -k` (stari server ima stari protokol).
+
+Test na Macu 2026-11-02: msync radi, ali AoE3 je isti (13-20k izuzetaka/s, zamrzavanje
+i petlja ostaju), a 1 od 4 starta je pao sa 0xC0000005. Nadjena i ispravljena trka u
+msync-u (shm_addrs se realloc-ovao dok ga druge niti citaju, u ntdll i u wineserver-u),
+zato je i podrazumevano iskljucen. Vracanje na stariji `bw` bez ovog patch-a: rucno
+vrati `wine/bin/wineserver.orig`, inace protokol ne odgovara.
 
 ## Ostalo (nije za AoE3)
 wow64cpu mode switch pod Rosettom (32-bit), `WINENCPU`, force LAA, ASLR pre Viste.

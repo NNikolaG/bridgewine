@@ -90,10 +90,24 @@ fn base_env(prefix: &Path) -> BTreeMap<String, String> {
         "WINEDEBUG".into(),
         winedebug(std::env::var("WINEDEBUG").ok()),
     );
-    // msync (patch 0016): wineserver i svi procesi moraju imati isti WINEMSYNC,
-    // inace se proces bez njega odmah ugasi ("Server is running with WINEMSYNC").
-    env.insert("WINEMSYNC".into(), "1".into());
+    // msync (patch 0016) je opciono: `WINEMSYNC=1 bw ...`. Wineserver i svi procesi
+    // moraju imati isti WINEMSYNC, inace se proces odmah ugasi ("Server is running
+    // with WINEMSYNC"), pa ga postavljamo svuda, a ne u receptu.
+    env.insert(
+        "WINEMSYNC".into(),
+        winemsync(std::env::var("WINEMSYNC").ok()),
+    );
     env
+}
+
+/// AoE3 sa msync-om nije brzi, a 1 od 4 starta je pao, pa je podrazumevano iskljuceno.
+fn winemsync(user: Option<String>) -> String {
+    if user.as_deref() == Some("1") {
+        "1"
+    } else {
+        "0"
+    }
+    .into()
 }
 
 /// Tih Wine, osim ako korisnik sam postavi `WINEDEBUG` (npr. `warn+dsound` za dijagnozu).
@@ -793,9 +807,10 @@ dxgi = "native,builtin"
     }
 
     #[test]
-    fn every_process_gets_the_same_winemsync() {
-        let env = base_env(Path::new("/p"));
-        assert_eq!(env["WINEMSYNC"], "1");
+    fn msync_is_opt_in() {
+        assert_eq!(winemsync(None), "0");
+        assert_eq!(winemsync(Some("0".into())), "0");
+        assert_eq!(winemsync(Some("1".into())), "1");
     }
 
     #[test]

@@ -14,7 +14,9 @@ and ntdll.so and wineserver must be replaced together.
 Ported from CrossOver 26.3 sources (Wine 11.0) to Wine 11.21: object_ops
 uses designated initializers, linux_wait_objs takes WAIT_TYPE, and the
 thread exit path no longer close()s the alert "fd", which under msync is an
-object index.
+object index. The shm_addrs table in ntdll and wineserver is no longer
+realloc()ed under lock-free readers (use-after-free race at startup); it is
+grown by publishing a copy.
 
 msync: Copyright (C) 2018 Zebediah Figura, (C) 2023 Marc-Aurel Zent;
 CrossOver integration (c) CodeWeavers, Inc. LGPL-2.1-or-later.
@@ -53,10 +55,10 @@ index dde4b58d..42b69874 100644
      init_files();
 diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
 new file mode 100644
-index 00000000..0d4157d2
+index 00000000..587484a3
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.c
-@@ -0,0 +1,1161 @@
+@@ -0,0 +1,1174 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -579,11 +581,20 @@ index 00000000..0d4157d2
 +    if (entry >= shm_addrs_size)
 +    {
 +        int new_size = max(shm_addrs_size * 2, entry + 1);
++        void **new_addrs;
 +
-+        if (!(shm_addrs = realloc( shm_addrs, new_size * sizeof(shm_addrs[0]) )))
-+            ERR("Failed to grow shm_addrs array to size %d.\n", shm_addrs_size);
-+        memset( shm_addrs + shm_addrs_size, 0, (new_size - shm_addrs_size) * sizeof(shm_addrs[0]) );
-+        shm_addrs_size = new_size;
++        /* get_shm() reads shm_addrs without the lock, so never realloc() or free
++         * the array another thread may be reading: publish a bigger copy and
++         * leak the old one (it only ever doubles). */
++        if (!(new_addrs = calloc( new_size, sizeof(new_addrs[0]) )))
++        {
++            ERR("Failed to grow shm_addrs array to size %d.\n", new_size);
++            os_unfair_lock_unlock( &shm_addrs_lock );
++            return NULL;
++        }
++        memcpy( new_addrs, shm_addrs, shm_addrs_size * sizeof(shm_addrs[0]) );
++        __atomic_store_n( &shm_addrs, new_addrs, __ATOMIC_RELEASE );
++        __atomic_store_n( &shm_addrs_size, new_size, __ATOMIC_RELEASE );
 +    }
 +
 +    if (!shm_addrs[entry])
@@ -610,10 +621,14 @@ index 00000000..0d4157d2
 +    int entry = idx >> (vm_kernel_page_shift - 4);
 +    int offset = (idx << 4) & vm_kernel_page_mask;
 +
-+    if (entry >= shm_addrs_size || !shm_addrs[entry])
++    int size = __atomic_load_n( &shm_addrs_size, __ATOMIC_ACQUIRE );
++    void **addrs = __atomic_load_n( &shm_addrs, __ATOMIC_ACQUIRE );
++    void *page;
++
++    if (entry >= size || !(page = __atomic_load_n( &addrs[entry], __ATOMIC_ACQUIRE )))
 +        return get_shm_slow( idx );
 +
-+    return (void *)((unsigned long)shm_addrs[entry] + offset);
++    return (void *)((unsigned long)page + offset);
 +}
 +
 +void msync_close( int obj )
@@ -1673,10 +1688,10 @@ index 46419a09..19127cea 100644
      set_current_time();
 diff --git a/server/msync.c b/server/msync.c
 new file mode 100644
-index 00000000..f177ed17
+index 00000000..6025d261
 --- /dev/null
 +++ b/server/msync.c
-@@ -0,0 +1,820 @@
+@@ -0,0 +1,843 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -1976,9 +1991,10 @@ index 00000000..f177ed17
 +        offset = (memory_object_offset_t)shm_tid_map;
 +        entry_size = shm_tid_size;
 +    }
-+    else if (message->entry < shm_addrs_size)
++    else if (message->entry < __atomic_load_n( &shm_addrs_size, __ATOMIC_ACQUIRE ))
 +    {
-+        offset = (memory_object_offset_t)shm_addrs[message->entry];
++        void **addrs = __atomic_load_n( &shm_addrs, __ATOMIC_ACQUIRE );
++        offset = (memory_object_offset_t)__atomic_load_n( &addrs[message->entry], __ATOMIC_ACQUIRE );
 +        entry_size = pagesize;
 +    }
 +    else
@@ -2342,21 +2358,29 @@ index 00000000..f177ed17
 +    free( msync );
 +}
 +
-+static void *get_shm( unsigned int idx )
++/* The main thread and the mach message pump thread both call get_shm(), so
++ * grow and fill shm_addrs under a lock, and never realloc() or free an array
++ * that a lock-free reader may hold: publish a bigger copy instead. */
++static pthread_mutex_t shm_addrs_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static void *get_shm_slow( unsigned int idx )
 +{
 +    int entry  = (idx * 16) / pagesize;
 +    int offset = (idx * 16) % pagesize;
++    void *ret;
++
++    pthread_mutex_lock( &shm_addrs_mutex );
 +
 +    if (entry >= shm_addrs_size)
 +    {
 +        int new_size = max(shm_addrs_size * 2, entry + 1);
++        void **new_addrs = calloc( new_size, sizeof(new_addrs[0]) );
 +
-+        if (!(shm_addrs = realloc( shm_addrs, new_size * sizeof(shm_addrs[0]) )))
-+            fprintf( stderr, "msync: couldn't expand shm_addrs array to size %d\n", entry + 1 );
-+
-+        memset( shm_addrs + shm_addrs_size, 0, (new_size - shm_addrs_size) * sizeof(shm_addrs[0]) );
-+
-+        shm_addrs_size = new_size;
++        if (!new_addrs)
++            fatal_error( "msync: couldn't expand shm_addrs array to size %d\n", new_size );
++        if (shm_addrs) memcpy( new_addrs, shm_addrs, shm_addrs_size * sizeof(shm_addrs[0]) );
++        __atomic_store_n( &shm_addrs, new_addrs, __ATOMIC_RELEASE );
++        __atomic_store_n( &shm_addrs_size, new_size, __ATOMIC_RELEASE );
 +    }
 +
 +    if (!shm_addrs[entry])
@@ -2372,11 +2396,25 @@ index 00000000..f177ed17
 +        if (debug_level)
 +            fprintf( stderr, "msync: Mapping page %d at %llu.\n", entry, address );
 +
-+        if (__sync_val_compare_and_swap( &shm_addrs[entry], 0, (void *)address ))
-+            mach_vm_deallocate( mach_task_self(), address, pagesize ); /* someone beat us to it */
++        __atomic_store_n( &shm_addrs[entry], (void *)address, __ATOMIC_RELEASE );
 +    }
 +
-+    return (void *)((unsigned long)shm_addrs[entry] + offset);
++    ret = (void *)((unsigned long)shm_addrs[entry] + offset);
++    pthread_mutex_unlock( &shm_addrs_mutex );
++    return ret;
++}
++
++static void *get_shm( unsigned int idx )
++{
++    int entry  = (idx * 16) / pagesize;
++    int offset = (idx * 16) % pagesize;
++    int size = __atomic_load_n( &shm_addrs_size, __ATOMIC_ACQUIRE );
++    void **addrs = __atomic_load_n( &shm_addrs, __ATOMIC_ACQUIRE );
++    void *page;
++
++    if (entry >= size || !(page = __atomic_load_n( &addrs[entry], __ATOMIC_ACQUIRE )))
++        return get_shm_slow( idx );
++    return (void *)((unsigned long)page + offset);
 +}
 +
 +static unsigned int msync_alloc_shm( int low, int high, enum msync_type type )
