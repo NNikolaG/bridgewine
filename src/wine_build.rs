@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use crate::bottle::{download_invocations, home, run_all, Invocation};
 use crate::runtime::{runtimes_dir, WINEHQ_VERSION};
 
-pub const PATCHES: [(&str, &str); 12] = [
+pub const PATCHES: [(&str, &str); 13] = [
     (
         "0001-ntdll-restore-TEB-GSBASE-after-SIGSYS-on-macOS.patch",
         include_str!(
@@ -77,10 +77,15 @@ pub const PATCHES: [(&str, &str); 12] = [
         "0015-ntdll-recover-from-spurious-Rosetta-faults-on-wx-pages.patch",
         include_str!("../patches/wine-11.21/0015-ntdll-recover-from-spurious-Rosetta-faults-on-wx-pages.patch"),
     ),
+    (
+        "0016-ntdll-server-add-msync-mach-semaphore-synchronization.patch",
+        include_str!("../patches/wine-11.21/0016-ntdll-server-add-msync-mach-semaphore-synchronization.patch"),
+    ),
 ];
 
-/// Moduli koje patch-evi menjaju: putanja u build folderu -> putanja u `lib/wine/`.
-pub const TARGETS: [(&str, &str); 6] = [
+/// Moduli koje patch-evi menjaju: putanja u build folderu -> putanja u `lib/wine/`
+/// (ili `bin/...` za programe u `wine/bin/`, vidi `runtime_file`).
+pub const TARGETS: [(&str, &str); 7] = [
     ("dlls/ntdll/ntdll.so", "x86_64-unix/ntdll.so"),
     ("dlls/winemac.drv/winemac.so", "x86_64-unix/winemac.so"),
     (
@@ -100,6 +105,8 @@ pub const TARGETS: [(&str, &str); 6] = [
         "dlls/winecoreaudio.drv/winecoreaudio.so",
         "x86_64-unix/winecoreaudio.so",
     ),
+    // msync (0016) menja protokol, pa wineserver ide zajedno sa ntdll.so
+    ("server/wineserver", "bin/wineserver"),
 ];
 
 /// Bez ovoga configure trazi biblioteke koje nasi moduli ne koriste.
@@ -176,6 +183,14 @@ fn lib_dir(app: &Path) -> PathBuf {
     app.join("Contents/Resources/wine/lib/wine")
 }
 
+/// `bin/<x>` -> `wine/bin/<x>`, sve ostalo je u `lib/wine/`.
+fn runtime_file(app: &Path, lib: &str) -> PathBuf {
+    match lib.strip_prefix("bin/") {
+        Some(name) => app.join("Contents/Resources/wine/bin").join(name),
+        None => lib_dir(app).join(lib),
+    }
+}
+
 /// Zapis u `lib/wine/`: patch-evi i velicine nasih modula, da `bw run` primeti
 /// kad se runtime ponovo instalira.
 fn stamp_path(app: &Path) -> PathBuf {
@@ -197,7 +212,7 @@ fn stamp_text(sizes: &[u64]) -> String {
 fn installed_sizes(app: &Path) -> Option<Vec<u64>> {
     TARGETS
         .iter()
-        .map(|(_, lib)| fs::metadata(lib_dir(app).join(lib)).ok().map(|m| m.len()))
+        .map(|(_, lib)| fs::metadata(runtime_file(app, lib)).ok().map(|m| m.len()))
         .collect()
 }
 
@@ -290,7 +305,7 @@ fn err(p: &Path) -> impl Fn(std::io::Error) -> String + '_ {
 
 /// codesign za .so (Gatekeeper), strip za PE samo kad imamo mingw (lokalni build).
 fn fixup(file: &Path, lib: &str, strip: bool) -> Result<(), String> {
-    let inv = if lib.ends_with(".so") {
+    let inv = if lib.ends_with(".so") || lib.starts_with("bin/") {
         tool("codesign", &["-f", "-s", "-"], file)
     } else if strip {
         tool("x86_64-w64-mingw32-strip", &[], file)
@@ -307,7 +322,7 @@ fn install_from(
     strip: bool,
 ) -> Result<(), String> {
     for (built, lib) in TARGETS {
-        let target = lib_dir(app).join(lib);
+        let target = runtime_file(app, lib);
         let orig = target.with_file_name(format!("{}.orig", lib.rsplit('/').next().unwrap_or(lib)));
         if !orig.exists() {
             fs::copy(&target, &orig).map_err(err(&orig))?;
@@ -498,6 +513,10 @@ mod tests {
                 let file = line.split(' ').nth(2).unwrap().trim_start_matches("a/");
                 let dir = &file[..file.rfind('/').unwrap()];
                 let dir = dir.trim_end_matches("/unix");
+                // generisana zaglavlja protokola (tools/make_requests)
+                if dir == "include/wine" {
+                    continue;
+                }
                 assert!(
                     TARGETS.iter().any(|(b, _)| b.starts_with(dir)),
                     "{name}: {file}"
@@ -560,7 +579,7 @@ mod tests {
     fn stamp_tracks_sizes_and_patches() {
         let app = std::env::temp_dir().join(format!("bw-wine-{}", std::process::id()));
         for (_, lib) in TARGETS {
-            let p = lib_dir(&app).join(lib);
+            let p = runtime_file(&app, lib);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(&p, b"ours").unwrap();
         }
@@ -571,5 +590,18 @@ mod tests {
         fs::write(lib_dir(&app).join(TARGETS[0].1), b"gcenx build").unwrap();
         assert!(!is_installed(&app));
         fs::remove_dir_all(&app).unwrap();
+    }
+
+    #[test]
+    fn wineserver_goes_to_wine_bin() {
+        let app = Path::new("/R/Wine.app");
+        assert_eq!(
+            runtime_file(app, "bin/wineserver"),
+            Path::new("/R/Wine.app/Contents/Resources/wine/bin/wineserver")
+        );
+        assert_eq!(
+            runtime_file(app, "x86_64-unix/ntdll.so"),
+            Path::new("/R/Wine.app/Contents/Resources/wine/lib/wine/x86_64-unix/ntdll.so")
+        );
     }
 }

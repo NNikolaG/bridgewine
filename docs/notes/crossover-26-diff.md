@@ -28,13 +28,21 @@ cenu (~25 us) placa Rosetta pre nego sto Wine dobije signal. Sikarugir (koji kor
 CrossOver-ov Wine) ima isti problem sa AoE2 DE (#233). Log iz 0013 kaze koja je
 instrukcija; ako je XGETBV, 0013 uklanja te izuzetke potpuno.
 
-## Performanse: msync (nije jos preneseno)
-CrossOver ima **msync** (Mach semafori + `__ulock_wait`, Marc-Aurel Zent): cekanja na
-event/mutex/semafor ne idu preko wineservera. Upstream na macOS-u nema ntsync, pa svako
-cekanje ide kroz wineserver. Ukljucuje se sa `WINEMSYNC=1`. Port na 11.21:
-`dlls/ntdll/unix/msync.c` (~1160 linija), `server/msync.c` (~820), izmene u
-`sync.c`, `server/inproc_sync.c`, `server/thread.c`, protocol.def; trazi i zamenu
-`wineserver` binarnog fajla u runtime-u. Sledeci korak ako 0012-0015 ne budu dovoljni.
+## Performanse: msync (patch 0016)
+CrossOver ima **msync** (Mach semafori + `__ulock_wait`, Zebediah Figura / Marc-Aurel
+Zent): cekanja i signali na event/mutex/semafor ne idu kroz wineserver. Upstream na
+macOS-u nema ntsync, pa svaki `SetEvent`/`WaitForSingleObject` je put do wineservera.
+
+Preneseno u `0016` na 11.21: `dlls/ntdll/unix/msync.c`, `server/msync.c`, kuke u
+`sync.c` i `server/inproc_sync.c` (iste koje ntsync koristi na Linuxu), novo polje
+`shm_idx` u `get_inproc_sync_fd` (protokol 971 -> 972, zato `bw` sada menja i
+`wine/bin/wineserver`). Izmene u odnosu na CrossOver: designated `object_ops`,
+`linux_wait_objs` sa `WAIT_TYPE`, i izlaz niti ne zove `close()` na alert "fd" (pod
+msync-om to je indeks objekta, CrossOver tu zatvara pogresan fd).
+
+Ukljucuje se sa `WINEMSYNC=1`; `bw` ga stavlja svim procesima (wineserver i svaki
+proces moraju se slagati). Pre prvog pokretanja: `wineserver -k` (stari server ima
+stari protokol).
 
 ## Ostalo (nije za AoE3)
 wow64cpu mode switch pod Rosettom (32-bit), `WINENCPU`, force LAA, ASLR pre Viste.

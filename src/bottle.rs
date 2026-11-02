@@ -90,6 +90,9 @@ fn base_env(prefix: &Path) -> BTreeMap<String, String> {
         "WINEDEBUG".into(),
         winedebug(std::env::var("WINEDEBUG").ok()),
     );
+    // msync (patch 0016): wineserver i svi procesi moraju imati isti WINEMSYNC,
+    // inace se proces bez njega odmah ugasi ("Server is running with WINEMSYNC").
+    env.insert("WINEMSYNC".into(), "1".into());
     env
 }
 
@@ -195,7 +198,6 @@ fn vulkan_env(wine: &str) -> Option<(String, String)> {
 pub fn steam_install_invocation(wine: &str, prefix: &Path, setup: &Path) -> Invocation {
     let mut env = base_env(prefix);
     env.extend(vulkan_env(wine));
-    env.insert("WINEMSYNC".into(), "1".into());
     Invocation {
         program: wine.into(),
         args: vec![setup.display().to_string(), "/S".into()],
@@ -788,6 +790,12 @@ dxgi = "native,builtin"
         fs::create_dir_all(dir.join("drive_c")).unwrap();
         assert!(bottle_exists(&dir));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn every_process_gets_the_same_winemsync() {
+        let env = base_env(Path::new("/p"));
+        assert_eq!(env["WINEMSYNC"], "1");
     }
 
     #[test]
