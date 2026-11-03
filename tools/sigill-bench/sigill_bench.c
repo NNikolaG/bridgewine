@@ -45,6 +45,27 @@ static const struct test tests[] = {
     { "aad 0xd5",   { 0xd5, 0x0a, 0xc3 }, 3, 1 },
 };
 
+/* Vrednosti u memoriji (volatile), ne u registrima: ako emulator pokvari
+ * callee-saved XMM/GPR posle izuzetka, petlja i dalje zna kad da stane. */
+static volatile LONG64 t0_ticks, freq_ticks;
+static double elapsed_us(void)
+{
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return (double)(c.QuadPart - t0_ticks) * 1e6 / (double)freq_ticks;
+}
+
+/* Proveri da xmm6 (callee-saved na Win64) prezivi poziv koji baca izuzetak. */
+static int xmm6_survives(void (*call)(void))
+{
+    static volatile double in = 1234.5, out;
+    __asm__ volatile("movsd %1, %%xmm6\n\tcall *%2\n\tmovsd %%xmm6, %0"
+                     : "=m"(out) : "m"(in), "r"(call)
+                     : "rax", "rcx", "rdx", "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2",
+                       "xmm3", "xmm4", "xmm5", "xmm6", "memory");
+    return out == in;
+}
+
 static double now_us(void)
 {
     static LARGE_INTEGER f;
@@ -128,16 +149,22 @@ int main(int argc, char **argv)
             continue;
         }
         for (int i = 0; i < 100; i++) call(); /* zagrijavanje */
+        if (!xmm6_survives(call)) {
+            printf("ERROR %s: xmm6 pokvaren posle izuzetka (emulator ne cuva XMM stanje)\n", tests[t].name);
+            failed = 1;
+        }
         /* najvise `iters` poziva ili 5 s, sta pre dodje */
         hits = 0;
-        double t0 = now_us();
-        long done = 0;
+        { LARGE_INTEGER f, c; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&c);
+          freq_ticks = f.QuadPart; t0_ticks = c.QuadPart; }
+        static volatile long done;
+        done = 0;
         while (done < iters) {
             for (int k = 0; k < 64; k++) call();
             done += 64;
-            if (now_us() - t0 > 5e6) break;
+            if (elapsed_us() > 5e6) break;
         }
-        double dt = now_us() - t0;
+        double dt = elapsed_us();
         double per = dt / (double)done;
         if (!tests[t].faults) { base_us = per; }
         else if (hits != done) {
