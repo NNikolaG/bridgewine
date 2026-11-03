@@ -73,8 +73,9 @@ static DWORD WINAPI watchdog(void *arg)
         Sleep(5000);
         double el = (now_us() - phase_start) / 1e6;
         if (el > 30) {
-            printf("STUCK test=%ld posle %.0fs hits=%lld first_rip=%p last_rip=%p\n", (long)phase, el,
-                   (long long)hits, (void *)first_rip, (void *)last_rip);
+            printf("STUCK test=%ld posle %.0fs hits=%lld (%.1f us/izuzetak) first_rip=%p last_rip=%p\n",
+                   (long)phase, el, (long long)hits, hits ? el * 1e6 / (double)hits : 0.0,
+                   (void *)first_rip, (void *)last_rip);
             fflush(stdout);
             ExitProcess(3);
         }
@@ -83,7 +84,8 @@ static DWORD WINAPI watchdog(void *arg)
 
 int main(int argc, char **argv)
 {
-    long iters = argc > 1 ? atol(argv[1]) : 200000;
+    int trace = argc > 1 && !strcmp(argv[1], "trace");
+    long iters = argc > 1 && !trace ? atol(argv[1]) : 200000;
     if (iters < 1000) iters = 1000;
 
     /* Na cemu stvarno radimo: arm64 host znaci emulator (FEX), amd64 znaci Rosetta/nativno. */
@@ -115,6 +117,16 @@ int main(int argc, char **argv)
         call(); /* prvi poziv posebno: JIT + prvi izuzetak */
         printf("FIRST %s hits=%lld first_rip=%p us=%.1f\n", tests[t].name, (long long)hits,
                (void *)first_rip, now_us() - phase_start); fflush(stdout);
+        if (trace) {
+            /* par poziva, uz WINEDEBUG=+seh se vidi gde se Rip izgubi */
+            for (int i = 0; i < 3; i++) {
+                hits = 0;
+                call();
+                printf("TRACE %s call=%d hits=%lld last_rip=%p\n", tests[t].name, i, (long long)hits,
+                       (void *)last_rip); fflush(stdout);
+            }
+            continue;
+        }
         for (int i = 0; i < 100; i++) call(); /* zagrijavanje */
         /* najvise `iters` poziva ili 5 s, sta pre dodje */
         hits = 0;

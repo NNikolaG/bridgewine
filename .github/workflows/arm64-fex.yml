@@ -86,13 +86,16 @@ jobs:
         run: |
           scripts/bench-sigill.sh "$OUT/bin/wine" out/sigill_bench.exe fex | tee out/bench-fex.txt
 
-      - name: FEX benchmark (log ako nije uspeo)
+      - name: FEX trace (seh log za nekoliko izuzetaka)
         if: always()
         continue-on-error: true
-        timeout-minutes: 15
+        timeout-minutes: 10
         run: |
-          if ! grep -q '^RESULT' out/bench-fex.txt 2>/dev/null; then
-            WINEDEBUG=err+all,warn+module,warn+seh scripts/bench-sigill.sh "$OUT/bin/wine" out/sigill_bench.exe fex 20000 2>&1 | tail -80
+          if ! grep -q 'RESULT test="pusha' out/bench-fex.txt 2>/dev/null; then
+            WINEDEBUG=+seh,+virtual scripts/bench-sigill.sh "$OUT/bin/wine" out/sigill_bench.exe fex trace > out/trace-fex.txt 2>&1 || true
+            grep -v '^[0-9a-f]*:trace:virtual' out/trace-fex.txt | tail -150
+            echo "virtual linija: $(grep -c ':virtual' out/trace-fex.txt)"
+            grep ':virtual' out/trace-fex.txt | tail -30
           fi
 
       - name: Summary
@@ -118,5 +121,6 @@ jobs:
             out/wine-arm64-fex.tar.gz
             out/sigill_bench.exe
             out/bench-*.txt
+            out/trace-*.txt
             work/*.log
           if-no-files-found: warn
