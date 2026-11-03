@@ -52,6 +52,7 @@ jobs:
 
       - name: Rosetta baseline (WineHQ 11.21 x86_64)
         continue-on-error: true
+        timeout-minutes: 20
         run: |
           softwareupdate --install-rosetta --agree-to-license || true
           arch -x86_64 /usr/bin/true
@@ -81,12 +82,14 @@ jobs:
 
       - name: FEX benchmark
         continue-on-error: true
+        timeout-minutes: 20
         run: |
           scripts/bench-sigill.sh "$OUT/bin/wine" out/sigill_bench.exe fex | tee out/bench-fex.txt
 
       - name: FEX benchmark (log ako nije uspeo)
         if: always()
         continue-on-error: true
+        timeout-minutes: 15
         run: |
           if ! grep -q '^RESULT' out/bench-fex.txt 2>/dev/null; then
             WINEDEBUG=err+all,warn+module,warn+seh scripts/bench-sigill.sh "$OUT/bin/wine" out/sigill_bench.exe fex 20000 2>&1 | tail -80

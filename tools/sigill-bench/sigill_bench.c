@@ -2,7 +2,8 @@
  * sigill_bench: mjeri cenu jednog EXCEPTION_ILLEGAL_INSTRUCTION koji VEH
  * odmah nastavi (EXCEPTION_CONTINUE_EXECUTION). Isti obrazac kao zastita u
  * AoE3 DE: opkodi koji ne postoje u 64-bitnom modu (PUSHA 0x60, DAA 0x27,
- * AAD 0xd5 ...) i ud2 za poredjenje.
+ * AAD 0xd5 ...). (ud2 namerno izostavljen: AoE3 ga ne koristi, a pod
+ * WineHQ 11.21 + Rosetta ruzi proces van VEH-a.)
  *
  * Build (x86_64 Windows exe):
  *   x86_64-w64-mingw32-gcc -O2 -o sigill_bench.exe sigill_bench.c
@@ -22,8 +23,8 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *e)
     if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION)
         return EXCEPTION_CONTINUE_SEARCH;
     const BYTE *ip = (const BYTE *)e->ContextRecord->Rip;
-    /* ud2 je 2 bajta, ostali testovi su 1 (AAD ima imm8, pa 2). */
-    if (ip[0] == 0x0f || ip[0] == 0xd5) e->ContextRecord->Rip += 2;
+    /* AAD ima imm8 (2 bajta), ostali su 1 bajt. */
+    if (ip[0] == 0xd5) e->ContextRecord->Rip += 2;
     else e->ContextRecord->Rip += 1;
     hits++;
     return EXCEPTION_CONTINUE_EXECUTION;
@@ -36,7 +37,6 @@ static const struct test tests[] = {
     { "pusha 0x60", { 0x60, 0xc3 }, 2, 1 },
     { "daa 0x27",   { 0x27, 0xc3 }, 2, 1 },
     { "aad 0xd5",   { 0xd5, 0x0a, 0xc3 }, 3, 1 },
-    { "ud2 0f0b",   { 0x0f, 0x0b, 0xc3 }, 3, 1 },
 };
 
 static double now_us(void)
