@@ -93,7 +93,13 @@ step_wine() {
   fi
   log "Wine build (-j$JOBS), traje 20-60 min"
   PATH="$TC/bin:$PATH" make -C "$build" -j"$JOBS" >"$WORK/wine-build.log" 2>&1 \
-    || { tail -40 "$WORK/wine-build.log"; die "Wine build pao (vidi $WORK/wine-build.log)"; }
+    || { tail -40 "$WORK/wine-build.log"
+         log "Dijagnostika: ponavljam pad sa winebuild -v"
+         command -v aarch64-w64-mingw32-clang arm64ec-w64-mingw32-clang llvm-dlltool lld-link || true
+         PATH="$TC/bin:$PATH" command -v aarch64-w64-mingw32-clang arm64ec-w64-mingw32-clang llvm-dlltool lld-link || true
+         PATH="$TC/bin:$PATH" aarch64-w64-mingw32-clang -print-prog-name=llvm-dlltool || true
+         PATH="$TC/bin:$PATH" make -C "$build" -j1 WINEBUILD="$build/tools/winebuild/winebuild -v" 2>&1 | tail -40
+         die "Wine build pao (vidi $WORK/wine-build.log)"; }
 }
 
 step_fex() {
