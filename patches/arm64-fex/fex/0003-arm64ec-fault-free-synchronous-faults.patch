@@ -1,0 +1,198 @@
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index dc8553e..d2afbaf 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -435,6 +435,26 @@ void Dispatcher::EmitDispatcher() {
+     }
+   }
+ 
++  {
++    // Fault-free synchronous guest fault (BridgeWine): AoE3-style protection code executes
++    // invalid opcodes thousands of times per second, so skip the host hlt/brk round trip
++    // through the kernel and call the frontend handler directly.
++    // CpuStateFrame::SynchronousFaultData is already filled in by the JIT.
++    GuestSignal_SynchronousFault = GetCursorAddress<uint64_t>();
++
++    SpillStaticRegs(TMP1);
++
++    ldr(ARMEmitter::XReg::x0, &l_CTX);
++    mov(ARMEmitter::XReg::x1, STATE);
++    ldr(ARMEmitter::XReg::x2, STATE_PTR(CpuStateFrame, Pointers.SynchronousExceptionHandler));
++
++    if (!CTX->Config.DisableVixlIndirectCalls) [[unlikely]] {
++      GenerateIndirectRuntimeCall<void, void*, void*>(ARMEmitter::Reg::r2);
++    } else {
++      br(ARMEmitter::Reg::r2);
++    }
++  }
++
+   {
+     ThreadPauseHandlerAddressSpillSRA = GetCursorAddress<uint64_t>();
+     SpillStaticRegs(TMP1);
+@@ -2626,6 +2646,7 @@ void Dispatcher::InitThreadPointers(FEXCore::Core::InternalThreadState* Thread)
+     Ptrs.GuestSignal_SIGILL = GuestSignal_SIGILL;
+     Ptrs.GuestSignal_SIGTRAP = GuestSignal_SIGTRAP;
+     Ptrs.GuestSignal_SIGSEGV = GuestSignal_SIGSEGV;
++    Ptrs.GuestSignal_SynchronousFault = GuestSignal_SynchronousFault;
+     Ptrs.SignalReturnHandler = SignalHandlerReturnAddress;
+     Ptrs.SignalReturnHandlerRT = SignalHandlerReturnAddressRT;
+     Ptrs.LUDIVHandler = LUDIVHandlerAddress;
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.h b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.h
+index b0f3d7a..b5b9ab1 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.h
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.h
+@@ -87,6 +87,7 @@ private:
+   uint64_t GuestSignal_SIGILL {};
+   uint64_t GuestSignal_SIGTRAP {};
+   uint64_t GuestSignal_SIGSEGV {};
++  uint64_t GuestSignal_SynchronousFault {};
+ 
+   uint64_t PauseReturnInstruction {};
+   std::array<uint64_t, FallbackABI::FABI_UNKNOWN> ABIPointers {};
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index 9d1eb47..e0defb4 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -76,6 +76,12 @@ DEF_OP(Break) {
+   LoadConstant(ARMEmitter::Size::i64Bit, TMP1, Constant);
+   str(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, SynchronousFaultData));
+ 
++  if (CTX->HostFeatures.SupportsFaultFreeSynchronousFaults) {
++    ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SynchronousFault));
++    br(TMP1);
++    return;
++  }
++
+   switch (Op->Reason.Signal) {
+   case Core::FAULT_SIGILL:
+     ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGILL));
+diff --git a/FEXCore/include/FEXCore/Core/CoreState.h b/FEXCore/include/FEXCore/Core/CoreState.h
+index 7c64dd8..8d56675 100644
+--- a/FEXCore/include/FEXCore/Core/CoreState.h
++++ b/FEXCore/include/FEXCore/Core/CoreState.h
+@@ -354,6 +354,8 @@ struct JITPointers {
+ 
+   // Handles returning/calling ARM64EC code from the JIT, expects the target PC in TMP3
+   uint64_t ExitFunctionEC {};
++  // Frontend handler for a synchronous guest fault raised without a host fault: void(Context*, CpuStateFrame*).
++  uint64_t SynchronousExceptionHandler {};
+ 
+   FallbackABIInfo FallbackHandlerPointers[FallbackHandlerIndex::OPINDEX_MAX];
+   uint64_t NamedVectorConstantPointers[FEXCore::IR::NamedVectorConstant::NAMED_VECTOR_CONST_POOL_MAX];
+@@ -373,6 +375,7 @@ struct JITPointers {
+   uint64_t GuestSignal_SIGILL {};
+   uint64_t GuestSignal_SIGTRAP {};
+   uint64_t GuestSignal_SIGSEGV {};
++  uint64_t GuestSignal_SynchronousFault {};
+   uint64_t SignalReturnHandler {};
+   uint64_t SignalReturnHandlerRT {};
+   uint64_t L2Pointer {};
+diff --git a/FEXCore/include/FEXCore/Core/HostFeatures.h b/FEXCore/include/FEXCore/Core/HostFeatures.h
+index 9aa1452..84a013a 100644
+--- a/FEXCore/include/FEXCore/Core/HostFeatures.h
++++ b/FEXCore/include/FEXCore/Core/HostFeatures.h
+@@ -74,10 +74,13 @@ struct HostFeatures {
+   uint32_t PreferZVAForVZero           : 1 {};
+   uint32_t SupportsAFP                 : 1 {};
+   uint32_t SupportsFloatExceptions     : 1 {};
++  // Synchronous guest faults (invalid opcode, int3, ...) are raised by the frontend
++  // straight from the dispatcher instead of through a host hlt/brk fault.
++  uint32_t SupportsFaultFreeSynchronousFaults : 1 {};
+   // Flag if this is InstCountCI
+   uint32_t IsInstCountCI : 1 {};
+   HostTypeEnum HostType  : 2 {};
+-  uint32_t pad           : 26 {};
++  uint32_t pad           : 25 {};
+ 
+   // MIDR information
+   // Also used for determining number of CPU cores for CPUID
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 7b04692..6e61254 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -483,17 +483,9 @@ static ARM64_NT_CONTEXT StoreStateToPackedECContext(FEXCore::Core::InternalThrea
+   return ECContext;
+ }
+ 
+-static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT& Context) {
+-  auto* Thread = GetCPUArea().ThreadState();
++static void RaiseGuestException(FEXCore::Core::InternalThreadState* Thread, const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT& GuestContext) {
+   auto& Fault = Thread->CurrentFrame->SynchronousFaultData;
+ 
+-  LogMan::Msg::DFmt("Reconstructing context");
+-  if (!IsDispatcherAddress(Context.Pc)) {
+-    ReconstructThreadState(Thread, Context);
+-  }
+-  ARM64_NT_CONTEXT GuestContext = StoreStateToPackedECContext(Thread, Context.Fpcr, Context.Fpsr);
+-  LogMan::Msg::DFmt("pc: {:X} rip: {:X}", Context.Pc, GuestContext.Pc);
+-
+   // X64 Windows always clears TF, DF and AF when handling an exception, restoring after.
+   // Current ARM64EC windows can only restore NZCV+SS when returning from an exception and other flags are left untouched from the handler context.
+   // TODO: Can extend wine to support this by mapping the remaining EFlags into reserved cpsr members.
+@@ -513,6 +505,44 @@ static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT&
+   NtRaiseExceptionNative(&GuestRec, &GuestContext, FirstChance);
+ }
+ 
++static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT& Context) {
++  auto* Thread = GetCPUArea().ThreadState();
++
++  LogMan::Msg::DFmt("Reconstructing context");
++  if (!IsDispatcherAddress(Context.Pc)) {
++    ReconstructThreadState(Thread, Context);
++  }
++  ARM64_NT_CONTEXT GuestContext = StoreStateToPackedECContext(Thread, Context.Fpcr, Context.Fpsr);
++  LogMan::Msg::DFmt("pc: {:X} rip: {:X}", Context.Pc, GuestContext.Pc);
++
++  RaiseGuestException(Thread, Rec, GuestContext);
++}
++
++// Called from the dispatcher (GuestSignal_SynchronousFault) with the guest state already spilled:
++// raise the guest exception without a host hlt/brk fault and the kernel signal that comes with it.
++[[noreturn]]
++static void SynchronousExceptionHandler(FEXCore::Context::Context*, FEXCore::Core::CpuStateFrame* Frame) {
++  auto* Thread = Frame->Thread;
++  auto& Fault = Thread->CurrentFrame->SynchronousFaultData;
++
++  uint64_t FPCR, FPSR;
++  __asm volatile("mrs %[fpcr], fpcr" : [fpcr] "=r"(FPCR));
++  __asm volatile("mrs %[fpsr], fpsr" : [fpsr] "=r"(FPSR));
++
++  auto GuestContext = StoreStateToPackedECContext(Thread, static_cast<uint32_t>(FPCR), static_cast<uint32_t>(FPSR));
++  // Same exception codes the faulting GuestSignal_* stubs produce (hlt, brk, null load).
++  EXCEPTION_RECORD Record {};
++  switch (Fault.Signal) {
++  case FEXCore::Core::FAULT_SIGILL: Record.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION; break;
++  case FEXCore::Core::FAULT_SIGTRAP: Record.ExceptionCode = EXCEPTION_BREAKPOINT; break;
++  case FEXCore::Core::FAULT_SIGSEGV: Record.ExceptionCode = EXCEPTION_ACCESS_VIOLATION; break;
++  default: ERROR_AND_DIE_FMT("Unknown fault signal"); break;
++  }
++
++  RaiseGuestException(Thread, Record, GuestContext);
++  ERROR_AND_DIE_FMT("RaiseGuestException returned");
++}
++
+ class ECSyscallHandler : public FEXCore::HLE::SyscallHandler, public FEXCore::Allocator::FEXAllocOperators {
+ public:
+   ECSyscallHandler() = default;
+@@ -976,6 +1006,7 @@ NTSTATUS ThreadInit() {
+ 
+   FEX::Windows::CallRetStack::InitializeThread(Thread);
+   Thread->CurrentFrame->Pointers.ExitFunctionEC = reinterpret_cast<uintptr_t>(&ExitFunctionEC);
++  Thread->CurrentFrame->Pointers.SynchronousExceptionHandler = reinterpret_cast<uintptr_t>(&Exception::SynchronousExceptionHandler);
+   CPUArea.StateFrame() = Thread->CurrentFrame;
+ 
+   uint64_t EnterEC = Thread->CurrentFrame->Pointers.DispatcherLoopTopEnterEC;
+diff --git a/Source/Windows/Common/CPUFeatures.cpp b/Source/Windows/Common/CPUFeatures.cpp
+index 034c2ca..f21605c 100644
+--- a/Source/Windows/Common/CPUFeatures.cpp
++++ b/Source/Windows/Common/CPUFeatures.cpp
+@@ -89,6 +89,9 @@ FEXCore::HostFeatures CPUFeatures::FetchHostFeatures(bool IsWine, FEXCore::HostF
+     // AVX is unsupported for WOW64
+     HostFeatures.SupportsAVX = false;
+   }
++
++  // ARM64EC raises synchronous guest exceptions from the dispatcher without a host fault.
++  HostFeatures.SupportsFaultFreeSynchronousFaults = HostType == FEXCore::HostFeatures::HostTypeEnum::Arm64ec;
+   return HostFeatures;
+ }
+ 

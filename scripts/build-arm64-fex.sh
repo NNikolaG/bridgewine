@@ -111,6 +111,8 @@ step_fex() {
     [ "$(git -C "$src" rev-parse HEAD)" = "$FEX_COMMIT" ] || die "FEX tag se promenio"
     git -C "$src" submodule update -q --init --depth 1 "${FEX_SUBMODULES[@]}"
     git -C "$src" apply "$PATCHES/fex/0001-load-teb-from-tsd-slot-and-wow64-guest-base.patch"
+    # nas patch: SIGILL/trap izuzetak ide direktno iz dispatchera, bez kernel signala
+    git -C "$src" apply "$PATCHES/fex/0003-arm64ec-fault-free-synchronous-faults.patch"
     git -C "$src/External/vixl" apply "$PATCHES/fex/0002-vixl-include-map.patch"
     touch "$src/.bw-patched"
   fi
