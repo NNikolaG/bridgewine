@@ -131,7 +131,8 @@ step_fex() {
 step_install() {
   log "Instalacija u $OUT"
   rm -rf "$OUT"
-  make -C "$WORK/wine-build" install >"$WORK/wine-install.log" 2>&1 \
+  # install pokrece winebuild za import biblioteke, pa i ovde treba llvm-mingw u PATH-u.
+  PATH="$TC/bin:$PATH" make -C "$WORK/wine-build" install >"$WORK/wine-install.log" 2>&1 \
     || { tail -20 "$WORK/wine-install.log"; die "make install pao"; }
   # ntdll (arm64ec) podrazumevano ucitava system32\xtajit64.dll; ako ga nema u
   # prefiksu, Wine ga nalazi kao builtin u aarch64-windows. Stavljamo oba imena.
