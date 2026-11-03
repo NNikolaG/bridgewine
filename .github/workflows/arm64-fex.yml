@@ -1,0 +1,119 @@
+name: Arm64 Wine + FEX (eksperiment)
+
+# Gradi native arm64 Wine (ARM64EC) + FEX na macOS arm64 runneru i meri cenu
+# AoE3-stila izuzetka (tools/sigill-bench) pod Rosettom (WineHQ 11.21 x86_64)
+# i pod FEX-om. Rezultat ide u job summary; runtime ide kao artifact za test na Macu.
+on:
+  pull_request:
+    paths:
+      - patches/arm64-fex/**
+      - scripts/build-arm64-fex.sh
+      - scripts/bench-sigill.sh
+      - tools/sigill-bench/**
+      - .github/workflows/arm64-fex.yml
+  workflow_dispatch:
+
+concurrency:
+  group: arm64-fex-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-bench:
+    runs-on: macos-latest
+    timeout-minutes: 240
+    env:
+      WORK: ${{ github.workspace }}/work
+      OUT: ${{ github.workspace }}/out/wine-arm64-fex
+      TC: ${{ github.workspace }}/work/llvm-mingw-20260922-ucrt-macos-universal
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Alati
+        run: |
+          test "$(uname -m)" = arm64
+          sw_vers; sysctl -n machdep.cpu.brand_string hw.ncpu
+          brew install bison flex cmake || true
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            work/wine-src
+            work/wine-build
+          key: arm64-fex-wine-${{ hashFiles('patches/arm64-fex/wine/**') }}
+
+      - name: Toolchain (llvm-mingw)
+        run: STEP=toolchain scripts/build-arm64-fex.sh
+
+      - name: SIGILL benchmark exe
+        run: |
+          mkdir -p out
+          "$TC/bin/x86_64-w64-mingw32-clang" -O2 -Wall -o out/sigill_bench.exe tools/sigill-bench/sigill_bench.c
+          file out/sigill_bench.exe
+
+      - name: Rosetta baseline (WineHQ 11.21 x86_64)
+        continue-on-error: true
+        run: |
+          softwareupdate --install-rosetta --agree-to-license || true
+          arch -x86_64 /usr/bin/true
+          mkdir -p rosetta && cd rosetta
+          curl -fsSL -o wine.tar.xz https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.21/wine-devel-11.21-osx64.tar.xz
+          tar -xJf wine.tar.xz && xattr -dr com.apple.quarantine "Wine Devel.app" || true
+          cd ..
+          "$GITHUB_WORKSPACE/scripts/bench-sigill.sh" "$PWD/rosetta/Wine Devel.app/Contents/Resources/wine/bin/wine" out/sigill_bench.exe rosetta | tee out/bench-rosetta.txt
+
+      - name: FEX DLL
+        run: STEP=fex scripts/build-arm64-fex.sh
+
+      - name: Wine arm64 (ARM64EC)
+        run: JOBS=$(sysctl -n hw.ncpu) STEP=wine scripts/build-arm64-fex.sh
+
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('work/wine-build/Makefile') != ''
+        continue-on-error: true
+        with:
+          path: |
+            work/wine-src
+            work/wine-build
+          key: arm64-fex-wine-${{ hashFiles('patches/arm64-fex/wine/**') }}
+
+      - name: Instalacija
+        run: STEP=install scripts/build-arm64-fex.sh
+
+      - name: FEX benchmark
+        continue-on-error: true
+        run: |
+          scripts/bench-sigill.sh "$OUT/bin/wine" out/sigill_bench.exe fex | tee out/bench-fex.txt
+
+      - name: FEX benchmark (log ako nije uspeo)
+        if: always()
+        continue-on-error: true
+        run: |
+          if ! grep -q '^RESULT' out/bench-fex.txt 2>/dev/null; then
+            WINEDEBUG=err+all,warn+module,warn+seh scripts/bench-sigill.sh "$OUT/bin/wine" out/sigill_bench.exe fex 20000 2>&1 | tail -80
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## SIGILL benchmark (AoE3-stil izuzetak)"
+            echo '```'
+            for f in out/bench-rosetta.txt out/bench-fex.txt; do echo "# $f"; cat "$f" 2>/dev/null || echo "(nema)"; done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pakovanje runtime-a
+        if: always()
+        run: |
+          [ -d "$OUT" ] && tar -C out -czf out/wine-arm64-fex.tar.gz wine-arm64-fex || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wine-arm64-fex
+          path: |
+            out/wine-arm64-fex.tar.gz
+            out/sigill_bench.exe
+            out/bench-*.txt
+            work/*.log
+          if-no-files-found: warn
