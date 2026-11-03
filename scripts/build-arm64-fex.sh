@@ -83,11 +83,13 @@ step_wine() {
   mkdir -p "$build"
   if [ ! -f "$build/Makefile" ]; then
   log "Wine configure (arm64ec + aarch64)"
+  # Unix strana: Appleov clang (/usr/bin), ne llvm-mingw-ov "clang" koji je prvi u PATH-u.
   (cd "$build" && PATH="$TC/bin:$PATH" "$src/configure" -q \
       --prefix="$OUT" \
       --enable-archs=arm64ec,aarch64 \
       --without-x --disable-tests \
-      CC=clang ac_cv_func_pipe2=no)
+      CC=/usr/bin/clang CXX=/usr/bin/clang++ ac_cv_func_pipe2=no) \
+    || { tail -60 "$build/config.log"; die "Wine configure pao"; }
   fi
   log "Wine build (-j$JOBS), traje 20-60 min"
   PATH="$TC/bin:$PATH" make -C "$build" -j"$JOBS" >"$WORK/wine-build.log" 2>&1 \
