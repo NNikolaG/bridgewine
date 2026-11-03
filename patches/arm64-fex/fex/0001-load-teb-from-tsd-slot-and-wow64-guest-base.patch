@@ -1,0 +1,629 @@
+diff --git a/FEXCore/Source/CMakeLists.txt b/FEXCore/Source/CMakeLists.txt
+index d292e5c..02b60f0 100644
+--- a/FEXCore/Source/CMakeLists.txt
++++ b/FEXCore/Source/CMakeLists.txt
+@@ -64,6 +64,7 @@ set(SRCS
+   Interface/IR/PassManager.cpp
+   Interface/IR/Passes/IRDumperPass.cpp
+   Interface/IR/Passes/IRValidation.cpp
++  Interface/IR/Passes/GuestBaseRebasePass.cpp
+   Interface/IR/Passes/RedundantFlagCalculationElimination.cpp
+   Interface/IR/Passes/RegisterAllocationPass.cpp
+   Interface/IR/Passes/x87StackOptimizationPass.cpp
+diff --git a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+index 3ebadb5..43d4159 100644
+--- a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
++++ b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+@@ -807,7 +807,8 @@ void Arm64Emitter::FillStaticRegs(FillStaticRegOptions Options) {
+ 
+ #ifdef ARCHITECTURE_arm64ec
+   // Load STATE in from the CPU area as x28 is not callee saved in the ARM64EC ABI.
+-  ldr(TmpReg.X(), ARMEmitter::Reg::r18, TEB_CPU_AREA_OFFSET);
++  LoadTEB(TmpReg.X());
++  ldr(TmpReg.X(), TmpReg, TEB_CPU_AREA_OFFSET);
+   ldr(STATE, TmpReg, CPU_AREA_EMULATOR_DATA_OFFSET);
+ #endif
+ 
+diff --git a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
+index 5ad6e7b..98575d1 100644
+--- a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
++++ b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.h
+@@ -107,6 +107,19 @@ constexpr ARMEmitter::PRegister PRED_TMP_32B = ARMEmitter::PReg::p7;
+ // be used by both Arm64 JIT and ARM64 Dispatcher
+ class Arm64Emitter : public ARMEmitter::Emitter {
+ public:
++  // Load the TEB pointer into Reg.  On the Wine macOS ARM64 port x18 is zeroed by the
++  // kernel on every return to user mode, so the TEB is read from a fixed pthread TSD
++  // slot (key 700, see WINE_MACOS_TEB_TSD_KEY in Wine's winnt.h) via TPIDRRO_EL0.
++  void LoadTEB(ARMEmitter::XRegister Reg) {
++#ifdef WINE_MACOS_TSD_TEB
++    mrs(Reg.R(), ARMEmitter::SystemRegister::TPIDRRO_EL0);
++    and_(ARMEmitter::Size::i64Bit, Reg.R(), Reg.R(), ~7ULL);
++    ldr(Reg, Reg.R(), 8 * 700);
++#else
++    mov(Reg, ARMEmitter::XReg::x18);
++#endif
++  }
++
+   Arm64Emitter(FEXCore::Context::ContextImpl* ctx, void* EmissionPtr = nullptr, size_t size = 0);
+ 
+   enum class PadType {
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 8286c14..d6a0784 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -8,6 +8,7 @@ desc: Glues Frontend, OpDispatcher and IR Opts & Compilation, LookupCache, Dispa
+ $end_info$
+ */
+ 
++#include <FEXCore/Core/GuestMemoryBase.h>
+ #include <cstdint>
+ #ifdef ZYDIS_DISASSEMBLER
+ #include <Zydis/Zydis.h>
+@@ -80,6 +81,12 @@ $end_info$
+ #include <arm_acle.h>
+ #endif
+ 
++// wine-macos-native: in 32-bit mode with a guest memory base, guest code is
++// read from GuestMemoryBase + RIP.
++static inline uint64_t GuestCodeHostAddress(uint64_t GuestRIP) {
++  return (FEXCore::GuestMemoryBase && GuestRIP <= UINT32_MAX) ? FEXCore::GuestMemoryBase + GuestRIP : GuestRIP;
++}
++
+ namespace FEXCore::Context {
+ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
+   : HostFeatures {Features}
+@@ -514,7 +521,7 @@ static void IRDumper(FEXCore::Core::InternalThreadState* Thread, IR::IREmitter*
+ }
+ 
+ bool ContextImpl::CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState& Thread, uint64_t GuestRIP, uint64_t MaxInst) {
+-  return Thread.FrontendDecoder->CheckIfCacheable(Thread, reinterpret_cast<const uint8_t*>(GuestRIP), GuestRIP, MaxInst);
++  return Thread.FrontendDecoder->CheckIfCacheable(Thread, reinterpret_cast<const uint8_t*>(GuestCodeHostAddress(GuestRIP)), GuestRIP, MaxInst);
+ }
+ 
+ ContextImpl::GenerateIRResult
+@@ -540,7 +547,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+   }
+ 
+   if (!HasCustomIR) {
+-    const auto* GuestCode = reinterpret_cast<const uint8_t*>(GuestRIP);
++    const auto* GuestCode = reinterpret_cast<const uint8_t*>(GuestCodeHostAddress(GuestRIP));
+ 
+     Thread->FrontendDecoder->DecodeLoop(GuestCode);
+ 
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index b174dab..dc8553e 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -150,7 +150,8 @@ void Dispatcher::EmitDispatcher() {
+   // Clobbers TMP1/2
+   // Check the EC code bitmap incase we need to exit the JIT to call into native code.
+   ARMEmitter::ForwardLabel l_NotECCode;
+-  ldr(TMP1, ARMEmitter::XReg::x18, TEB_PEB_OFFSET);
++  LoadTEB(TMP1);
++  ldr(TMP1, TMP1.R(), TEB_PEB_OFFSET);
+   ldr(TMP1, TMP1, PEB_EC_CODE_BITMAP_OFFSET);
+ 
+   lsr(ARMEmitter::Size::i64Bit, TMP2, RipReg, 18);
+@@ -258,7 +259,8 @@ void Dispatcher::EmitDispatcher() {
+ #endif
+ 
+ #ifdef ARCHITECTURE_arm64ec
+-    ldr(TMP2, ARMEmitter::XReg::x18, TEB_CPU_AREA_OFFSET);
++    LoadTEB(TMP2);
++    ldr(TMP2, TMP2.R(), TEB_CPU_AREA_OFFSET);
+     LoadConstant(ARMEmitter::Size::i32Bit, TMP1, 1);
+     strb(TMP1.W(), TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
+ #endif
+@@ -266,7 +268,8 @@ void Dispatcher::EmitDispatcher() {
+     Body();
+ 
+ #ifdef ARCHITECTURE_arm64ec
+-    ldr(TMP2, ARMEmitter::XReg::x18, TEB_CPU_AREA_OFFSET);
++    LoadTEB(TMP2);
++    ldr(TMP2, TMP2.R(), TEB_CPU_AREA_OFFSET);
+     strb(ARMEmitter::WReg::zr, TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
+ #endif
+ 
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index 805a731..824595b 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -5,6 +5,7 @@ tags: backend|arm64
+ $end_info$
+ */
+ 
++#include <FEXCore/Core/GuestMemoryBase.h>
+ #include "FEXCore/Core/X86Enums.h"
+ #include "FEXCore/Utils/LogManager.h"
+ #include "Interface/Context/Context.h"
+@@ -1465,6 +1466,29 @@ DEF_OP(VBroadcastFromMem) {
+   }
+ }
+ 
++// wine-macos-native: 32-bit guest memory lives at FEXCore::GuestMemoryBase.
++static inline bool UseGuestMemoryBase(const FEXCore::Context::ContextImpl* CTX) {
++  return FEXCore::GuestMemoryBase && !CTX->Config.Is64BitMode;
++}
++
++#define GUEST_STORE(Size, Src, Base) \
++  switch (Size) { \
++  case 1: strb(Src, Base, 0); break; \
++  case 2: strh(Src, Base, 0); break; \
++  case 4: str(Src.W(), Base, 0); break; \
++  case 8: str(Src.X(), Base, 0); break; \
++  default: LOGMAN_MSG_A_FMT("Unhandled guest store size: {}", Size); break; \
++  }
++
++#define GUEST_LOAD(Size, Dst, Base) \
++  switch (Size) { \
++  case 1: ldrb(Dst, Base, 0); break; \
++  case 2: ldrh(Dst, Base, 0); break; \
++  case 4: ldr(Dst.W(), Base, 0); break; \
++  case 8: ldr(Dst.X(), Base, 0); break; \
++  default: LOGMAN_MSG_A_FMT("Unhandled guest load size: {}", Size); break; \
++  }
++
+ DEF_OP(Push) {
+   const auto Op = IROp->C<IR::IROp_Push>();
+   const auto ValueSize = IR::OpSizeToSize(Op->ValueSize);
+@@ -1472,6 +1496,16 @@ DEF_OP(Push) {
+   const auto AddrSrc = GetReg(Op->Addr);
+   const auto Dst = GetReg(Node);
+ 
++  if (UseGuestMemoryBase(CTX)) {
++    // NewSP = SP - size (32-bit); store to GuestMemoryBase + NewSP
++    sub(ARMEmitter::Size::i32Bit, TMP2, AddrSrc, ValueSize);
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, FEXCore::GuestMemoryBase);
++    add(ARMEmitter::Size::i64Bit, TMP3, TMP3, TMP2, ARMEmitter::ExtendedType::UXTW, 0);
++    GUEST_STORE(ValueSize, Src, TMP3);
++    mov(ARMEmitter::Size::i32Bit, Dst, TMP2);
++    return;
++  }
++
+   bool NeedsMoveAfterwards = false;
+   if (Dst != AddrSrc) {
+     if (Dst == Src) {
+@@ -1557,6 +1591,19 @@ DEF_OP(PushTwo) {
+   auto Src2 = GetReg(Op->Value2);
+   const auto Dst = GetReg(Op->Addr);
+ 
++  if (UseGuestMemoryBase(CTX)) {
++    sub(ARMEmitter::Size::i32Bit, TMP2, Dst, 2 * ValueSize);
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, FEXCore::GuestMemoryBase);
++    add(ARMEmitter::Size::i64Bit, TMP3, TMP3, TMP2, ARMEmitter::ExtendedType::UXTW, 0);
++    if (ValueSize == 4) {
++      stp<ARMEmitter::IndexType::OFFSET>(Src1.W(), Src2.W(), TMP3, 0);
++    } else {
++      stp<ARMEmitter::IndexType::OFFSET>(Src1.X(), Src2.X(), TMP3, 0);
++    }
++    mov(ARMEmitter::Size::i32Bit, Dst, TMP2);
++    return;
++  }
++
+   switch (ValueSize) {
+   case 4: {
+     stp<ARMEmitter::IndexType::PRE>(Src1.W(), Src2.W(), Dst, -2 * ValueSize);
+@@ -1581,6 +1628,14 @@ DEF_OP(Pop) {
+ 
+   LOGMAN_THROW_A_FMT(Dst != Addr, "Invalid");
+ 
++  if (UseGuestMemoryBase(CTX)) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, FEXCore::GuestMemoryBase);
++    add(ARMEmitter::Size::i64Bit, TMP3, TMP3, Addr, ARMEmitter::ExtendedType::UXTW, 0);
++    GUEST_LOAD(Size, Dst, TMP3);
++    add(ARMEmitter::Size::i32Bit, Addr, Addr, Size);
++    return;
++  }
++
+   switch (Size) {
+   case 1: {
+     ldrb<ARMEmitter::IndexType::POST>(Dst.W(), Addr, Size);
+@@ -1620,6 +1675,18 @@ DEF_OP(PopTwo) {
+   LOGMAN_THROW_A_FMT(Dst1 != Addr && Dst2 != Addr, "Invalid");
+   LOGMAN_THROW_A_FMT(Dst1 != Dst2, "Invalid");
+ 
++  if (UseGuestMemoryBase(CTX)) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, FEXCore::GuestMemoryBase);
++    add(ARMEmitter::Size::i64Bit, TMP3, TMP3, Addr, ARMEmitter::ExtendedType::UXTW, 0);
++    if (Size == 4) {
++      ldp<ARMEmitter::IndexType::OFFSET>(Dst1.W(), Dst2.W(), TMP3, 0);
++    } else {
++      ldp<ARMEmitter::IndexType::OFFSET>(Dst1.X(), Dst2.X(), TMP3, 0);
++    }
++    add(ARMEmitter::Size::i32Bit, Addr, Addr, 2 * Size);
++    return;
++  }
++
+   switch (Size) {
+   case 4: {
+     ldp<ARMEmitter::IndexType::POST>(Dst1.W(), Dst2.W(), Addr, 2 * Size);
+@@ -1882,6 +1949,12 @@ DEF_OP(MemSet) {
+     const auto Prefix = GetReg(Op->Prefix);
+     add(TMP2, Prefix.X(), MemReg.X());
+   }
++  if (UseGuestMemoryBase(CTX)) {
++    // Working pointer = GuestMemoryBase + zext32(guest address [+ segment])
++    mov(ARMEmitter::Size::i32Bit, TMP2, TMP2);
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, FEXCore::GuestMemoryBase);
++    add(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP3);
++  }
+ 
+   if (!DirectionIsInline) {
+     // Backward or forwards implementation depends on flag
+@@ -2116,6 +2189,11 @@ DEF_OP(MemCpy) {
+   mov(TMP1, Length.X());
+   mov(TMP2, MemRegDest.X());
+   mov(TMP3, MemRegSrc.X());
++  if (UseGuestMemoryBase(CTX)) {
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP4, FEXCore::GuestMemoryBase);
++    add(ARMEmitter::Size::i64Bit, TMP2, TMP4, MemRegDest, ARMEmitter::ExtendedType::UXTW, 0);
++    add(ARMEmitter::Size::i64Bit, TMP3, TMP4, MemRegSrc, ARMEmitter::ExtendedType::UXTW, 0);
++  }
+ 
+   // TMP1 = Length
+   // TMP2 = Dest
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index 6c2b349..9d1eb47 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -334,7 +334,8 @@ DEF_OP(MonoBackpatcherWrite) {
+   }
+ 
+ #ifdef ARCHITECTURE_arm64ec
+-  ldr(TMP2, ARMEmitter::XReg::x18, TEB_CPU_AREA_OFFSET);
++  LoadTEB(TMP2);
++  ldr(TMP2, TMP2.R(), TEB_CPU_AREA_OFFSET);
+   LoadConstant(ARMEmitter::Size::i32Bit, TMP1, 1);
+   strb(TMP1.W(), TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
+ #endif
+@@ -347,7 +348,8 @@ DEF_OP(MonoBackpatcherWrite) {
+   }
+ 
+ #ifdef ARCHITECTURE_arm64ec
+-  ldr(TMP2, ARMEmitter::XReg::x18, TEB_CPU_AREA_OFFSET);
++  LoadTEB(TMP2);
++  ldr(TMP2, TMP2.R(), TEB_CPU_AREA_OFFSET);
+   strb(ARMEmitter::WReg::zr, TMP2, CPU_AREA_IN_SYSCALL_CALLBACK_OFFSET);
+ #endif
+ 
+diff --git a/FEXCore/Source/Interface/IR/PassManager.cpp b/FEXCore/Source/Interface/IR/PassManager.cpp
+index 5d3bcec..98e3a6c 100644
+--- a/FEXCore/Source/Interface/IR/PassManager.cpp
++++ b/FEXCore/Source/Interface/IR/PassManager.cpp
+@@ -77,6 +77,9 @@ void PassManager::AddDefaultPasses(Context::ContextImpl* ctx) {
+     InsertPass(CreateDeadFlagCalculationEliminination());
+   }
+ 
++  // Not an optimization: required for correctness when GuestMemoryBase is set.
++  InsertPass(CreateGuestBaseRebasePass(ctx->Config.Is64BitMode));
++
+   InsertPass(IR::CreateRegisterAllocationPass(&ctx->CPUID), "RA");
+ 
+ #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+diff --git a/FEXCore/Source/Interface/IR/Passes.h b/FEXCore/Source/Interface/IR/Passes.h
+index 213967a..52172be 100644
+--- a/FEXCore/Source/Interface/IR/Passes.h
++++ b/FEXCore/Source/Interface/IR/Passes.h
+@@ -14,6 +14,7 @@ class Pass;
+ fextl::unique_ptr<Pass> CreateDeadFlagCalculationEliminination();
+ fextl::unique_ptr<Pass> CreateRegisterAllocationPass(const CPUIDEmu* CPUID);
+ fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures&, OpSize GPROpSize);
++fextl::unique_ptr<Pass> CreateGuestBaseRebasePass(bool Is64BitMode);
+ 
+ namespace Validation {
+   fextl::unique_ptr<Pass> CreateIRValidation();
+diff --git a/FEXCore/Source/Interface/IR/Passes/GuestBaseRebasePass.cpp b/FEXCore/Source/Interface/IR/Passes/GuestBaseRebasePass.cpp
+new file mode 100644
+index 0000000..e86acfd
+--- /dev/null
++++ b/FEXCore/Source/Interface/IR/Passes/GuestBaseRebasePass.cpp
+@@ -0,0 +1,105 @@
++// SPDX-License-Identifier: MIT
++/*
++$info$
++tags: ir|opts
++desc: Rebases 32-bit guest memory accesses onto FEXCore::GuestMemoryBase
++$end_info$
++*/
++
++#include "Interface/IR/IREmitter.h"
++#include "Interface/IR/PassManager.h"
++#include "Interface/IR/Passes.h"
++
++#include <FEXCore/Core/GuestMemoryBase.h>
++#include <FEXCore/IR/IR.h>
++#include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/Utils/Profiler.h>
++
++namespace FEXCore::IR {
++namespace {
++class GuestBaseRebase final : public FEXCore::IR::Pass {
++public:
++  explicit GuestBaseRebase(bool Is64BitMode)
++    : Is64BitMode {Is64BitMode} {}
++  void Run(IREmitter* IREmit) override;
++
++private:
++  bool Is64BitMode;
++};
++
++// Index of the guest address argument, or -1 when the op is not a plain guest
++// memory access. Push/Pop variants are rebased in the JIT backend because their
++// address operand is also the updated stack pointer.
++int GuestAddressArg(IROps Op) {
++  switch (Op) {
++#define ADDR(OP, STRUCT, NAME) \
++  case OP_##OP: return IROp_##STRUCT::NAME##_Index;
++    ADDR(LOADMEM, LoadMem, Addr)
++    ADDR(LOADMEMPAIR, LoadMemPair, Addr)
++    ADDR(STOREMEM, StoreMem, Addr)
++    ADDR(STOREMEMPAIR, StoreMemPair, Addr)
++    ADDR(STOREMEMX87SVEOPTPREDICATE, StoreMemX87SVEOptPredicate, Addr)
++    ADDR(LOADMEMX87SVEOPTPREDICATE, LoadMemX87SVEOptPredicate, Addr)
++    ADDR(LOADMEMTSO, LoadMemTSO, Addr)
++    ADDR(STOREMEMTSO, StoreMemTSO, Addr)
++    ADDR(VLOADVECTORMASKED, VLoadVectorMasked, Addr)
++    ADDR(VSTOREVECTORMASKED, VStoreVectorMasked, Addr)
++    ADDR(VLOADVECTORGATHERMASKED, VLoadVectorGatherMasked, AddrBase)
++    ADDR(VLOADVECTORGATHERMASKEDQPS, VLoadVectorGatherMaskedQPS, AddrBase)
++    ADDR(VLOADVECTORELEMENT, VLoadVectorElement, Addr)
++    ADDR(VSTOREVECTORELEMENT, VStoreVectorElement, Addr)
++    ADDR(VBROADCASTFROMMEM, VBroadcastFromMem, Address)
++    ADDR(CACHELINECLEAR, CacheLineClear, Addr)
++    ADDR(CACHELINECLEAN, CacheLineClean, Addr)
++    ADDR(CACHELINEZERO, CacheLineZero, Addr)
++    ADDR(PREFETCH, Prefetch, Addr)
++    ADDR(VSTORENONTEMPORAL, VStoreNonTemporal, Addr)
++    ADDR(VSTORENONTEMPORALPAIR, VStoreNonTemporalPair, Addr)
++    ADDR(VLOADNONTEMPORAL, VLoadNonTemporal, Addr)
++    ADDR(CAS, CAS, Addr)
++    ADDR(CASPAIR, CASPair, Addr)
++    ADDR(ATOMICSWAP, AtomicSwap, Addr)
++    ADDR(ATOMICFETCHADD, AtomicFetchAdd, Addr)
++    ADDR(ATOMICFETCHSUB, AtomicFetchSub, Addr)
++    ADDR(ATOMICFETCHAND, AtomicFetchAnd, Addr)
++    ADDR(ATOMICFETCHCLR, AtomicFetchCLR, Addr)
++    ADDR(ATOMICFETCHOR, AtomicFetchOr, Addr)
++    ADDR(ATOMICFETCHXOR, AtomicFetchXor, Addr)
++    ADDR(ATOMICFETCHNEG, AtomicFetchNeg, Addr)
++    ADDR(VALIDATECODE, ValidateCode, Address)
++#undef ADDR
++  default: return -1;
++  }
++}
++
++void GuestBaseRebase::Run(IREmitter* IREmit) {
++  FEXCORE_PROFILE_SCOPED("PassManager::GuestBaseRebase");
++
++  if (Is64BitMode || !FEXCore::GuestMemoryBase) {
++    return;
++  }
++
++  auto CurrentIR = IREmit->ViewIR();
++  for (auto [BlockNode, BlockHeader] : CurrentIR.GetBlocks()) {
++    IREmit->SetCurrentCodeBlock(BlockNode);
++    for (auto [CodeNode, IROp] : CurrentIR.GetCode(BlockNode)) {
++      const int Arg = GuestAddressArg(IROp->Op);
++      if (Arg < 0) {
++        continue;
++      }
++
++      // HostAddr = GuestMemoryBase + zext32(GuestAddr)
++      IREmit->SetWriteCursorBefore(CodeNode);
++      Ref GuestAddr = IREmit->UnwrapNode(IROp->Args[Arg]);
++      Ref Zext = IREmit->_Bfe(OpSize::i64Bit, 32, 0, GuestAddr);
++      Ref HostAddr = IREmit->Add(OpSize::i64Bit, Zext, FEXCore::GuestMemoryBase);
++      IREmit->ReplaceNodeArgument(CodeNode, Arg, HostAddr);
++    }
++  }
++}
++} // namespace
++
++fextl::unique_ptr<FEXCore::IR::Pass> CreateGuestBaseRebasePass(bool Is64BitMode) {
++  return fextl::make_unique<GuestBaseRebase>(Is64BitMode);
++}
++} // namespace FEXCore::IR
+diff --git a/FEXCore/include/FEXCore/Core/GuestMemoryBase.h b/FEXCore/include/FEXCore/Core/GuestMemoryBase.h
+new file mode 100644
+index 0000000..20e1214
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Core/GuestMemoryBase.h
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <cstdint>
++
++namespace FEXCore {
++// Host address of 32-bit guest address 0 (wine-macos-native WoW64).
++// macOS arm64 processes cannot map anything below 4GB, so a 32-bit guest's
++// address space lives at GuestMemoryBase .. GuestMemoryBase + 4GB.
++// 0 means guest addresses are host addresses (the upstream behaviour).
++inline uint64_t GuestMemoryBase = 0;
++} // namespace FEXCore
+diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+index 4a59cf6..12777d2 100644
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
+@@ -16,7 +16,10 @@ RetToEntryThunk:
+ 
+ check_target_ec:
+   // Check if target is in fact x86 code
+-  ldr x16, [x18, #0x60] // TEB->PEB
++  mrs x16, tpidrro_el0 // TEB from TSD slot 700 (Wine macOS port)
++  and x16, x16, #0xfffffffffffffff8
++  ldr x16, [x16, #5600]
++  ldr x16, [x16, #0x60] // TEB->PEB
+   ldr x16, [x16, #0x368] // PEB->EcCodeBitMap
+   lsr x17, x9, #18
+   ldr x16, [x16, x17, lsl #3]
+@@ -32,7 +35,10 @@ ExitToX64:
+   str lr, [sp, #-8]! // Push return address to stack, this will be popped by the x86 RET instr.
+ 
+ enter_jit:
+-  ldr x17, [x18, #0x1788] // TEB->ChpeV2CpuAreaInfo
++  mrs x17, tpidrro_el0 // TEB from TSD slot 700 (Wine macOS port)
++  and x17, x17, #0xfffffffffffffff8
++  ldr x17, [x17, #5600]
++  ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   mov w16, #1
+   strb w16, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation
+   ldr x16, [x17, #0x40] // ChpeV2CpuAreaInfo->EmulatorData[2] - DispatcherLoopTopEnterEC
+@@ -41,12 +47,18 @@ enter_jit:
+   // Invoked by KiUserEmulationDispatcher after e.g. an NtContinue to x86 code
+ .global BeginSimulation
+ BeginSimulation:
+-  ldr x17, [x18, #0x1788] // TEB->ChpeV2CpuAreaInfo
++  mrs x17, tpidrro_el0 // TEB from TSD slot 700 (Wine macOS port)
++  and x17, x17, #0xfffffffffffffff8
++  ldr x17, [x17, #5600]
++  ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   ldr x16, [x17, #0x8] // ChpeV2CpuAreaInfo->EmulatorStackBase
+   mov sp, x16
+   ldr x0, [x17, #0x18] // ChpeV2CpuAreaInfo->ContextAmd64
+   bl "#SyncThreadContext"
+-  ldr x17, [x18, #0x1788] // TEB->ChpeV2CpuAreaInfo
++  mrs x17, tpidrro_el0 // TEB from TSD slot 700 (Wine macOS port)
++  and x17, x17, #0xfffffffffffffff8
++  ldr x17, [x17, #5600]
++  ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   ldr x16, [x17, #0x48] // ChpeV2CpuAreaInfo->EmulatorData[3] - DispatcherLoopTopEnterECFillSRA
+   mov x11, #0 // Zero ENTRY_FILL_SRA_SINGLE_INST_REG to avoid single step
+   br x16 // DispatcherLoopTopEnterECFillSRA(SingleInst:x10, CPUArea:x17)
+@@ -59,7 +71,10 @@ ExitFunctionEC:
+   mrs x17, fpcr
+   and x17, x17, #~6 // NEP + AH
+   msr fpcr, x17
+-  ldr x17, [x18, #0x1788] // TEB->ChpeV2CpuAreaInfo
++  mrs x17, tpidrro_el0 // TEB from TSD slot 700 (Wine macOS port)
++  and x17, x17, #0xfffffffffffffff8
++  ldr x17, [x17, #5600]
++  ldr x17, [x17, #0x1788] // TEB->ChpeV2CpuAreaInfo
+   strb wzr, [x17, #0x0] // ChpeV2CpuAreaInfo->InSimulation
+   ldr x17, [x17, #0x20] // ChpeV2CpuAreaInfo->SuspendDoorbell
+   ldr w17, [x17]
+diff --git a/Source/Windows/Common/GuestAddress.h b/Source/Windows/Common/GuestAddress.h
+new file mode 100644
+index 0000000..aaad760
+--- /dev/null
++++ b/Source/Windows/Common/GuestAddress.h
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <FEXCore/Core/GuestMemoryBase.h>
++#include <cstdint>
++
++// wine-macos-native: conversions between 32-bit guest addresses (offsets) and
++// host addresses (FEXCore::GuestMemoryBase + offset). No-ops when the base is 0.
++namespace FEX::Windows {
++inline uint64_t GuestToHost(uint64_t Guest) {
++  return FEXCore::GuestMemoryBase && Guest <= UINT32_MAX ? FEXCore::GuestMemoryBase + Guest : Guest;
++}
++inline uint64_t HostToGuest(uint64_t Host) {
++  const auto Base = FEXCore::GuestMemoryBase;
++  return Base && Host >= Base && Host - Base <= UINT32_MAX ? Host - Base : Host;
++}
++} // namespace FEX::Windows
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index 155403d..7faf5ee 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ 
++#include "GuestAddress.h"
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Utils/TypeDefines.h>
+ #include <FEXCore/Utils/SignalScopeGuards.h>
+@@ -332,9 +333,10 @@ void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t
+ 
+ void InvalidationTracker::InvalidateIntervalInternalLocked(uint64_t Address, uint64_t Size) {
+   // NOTE: This assumes CodeInvalidationMutex is locked by the caller
+-  CTX.InvalidateCodeBuffersCodeRange(Address, Size);
++  // The tracker works on host addresses; the code caches are keyed by guest addresses.
++  CTX.InvalidateCodeBuffersCodeRange(HostToGuest(Address), Size);
+   for (auto Thread : Threads) {
+-    CTX.InvalidateThreadCachedCodeRange(Thread.second, Address, Size);
++    CTX.InvalidateThreadCachedCodeRange(Thread.second, HostToGuest(Address), Size);
+   }
+ }
+ 
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 62a8dd2..5dd53ae 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -8,6 +8,7 @@ $end_info$
+ 
+ // Thanks to André Zwing, whose ideas from https://github.com/AndreRH/hangover this code is based upon
+ 
++#include "Common/GuestAddress.h"
+ #include <FEXCore/fextl/fmt.h>
+ #include <FEXCore/Core/X86Enums.h>
+ #include <FEXCore/Core/SignalDelegator.h>
+@@ -450,7 +451,7 @@ public:
+   WowSyscallHandler() = default;
+ 
+   static void HandleSyscallImpl(FEXCore::Core::CpuStateFrame* Frame) {
+-    const uint64_t ReturnRIP = *(uint32_t*)(Frame->State.gregs[FEXCore::X86State::REG_RSP]); // Return address from the stack
++    const uint64_t ReturnRIP = *(uint32_t*)FEX::Windows::GuestToHost(Frame->State.gregs[FEXCore::X86State::REG_RSP]); // Return address from the stack
+     uint64_t ReturnRSP = Frame->State.gregs[FEXCore::X86State::REG_RSP] + 4;                 // Stack pointer after popping return address
+     uint64_t ReturnRAX = 0;
+ 
+@@ -459,7 +460,7 @@ public:
+         unixlib_handle_t Handle;
+         UINT32 ID;
+         ULONG32 Args;
+-      }* StackArgs = reinterpret_cast<StackLayout*>(ReturnRSP);
++      }* StackArgs = reinterpret_cast<StackLayout*>(FEX::Windows::GuestToHost(ReturnRSP));
+ 
+       Frame->State.gregs[FEXCore::X86State::REG_RSP] = ReturnRSP + sizeof(StackLayout);
+       Frame->State.rip = ReturnRIP;
+@@ -498,11 +499,11 @@ public:
+   }
+ 
+   void MarkGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override {
+-    InvalidationTracker->ReprotectRWXIntervals(Start, Length);
++    InvalidationTracker->ReprotectRWXIntervals(FEX::Windows::GuestToHost(Start), Length);
+   }
+ 
+   void InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override {
+-    InvalidationTracker->InvalidateAlignedInterval(Start, Length, false);
++    InvalidationTracker->InvalidateAlignedInterval(FEX::Windows::GuestToHost(Start), Length, false);
+   }
+ 
+   void MarkOvercommitRange(uint64_t Start, uint64_t Length) override {
+@@ -514,7 +515,11 @@ public:
+   }
+ 
+   FEXCore::HLE::ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) override {
+-    return InvalidationTracker->QueryExecutableRange(Address);
++    auto Info = InvalidationTracker->QueryExecutableRange(FEX::Windows::GuestToHost(Address));
++    if (Info.Size) {
++      Info.Base = FEX::Windows::HostToGuest(Info.Base);
++    }
++    return Info;
+   }
+ 
+   void PreCompile() override {
+@@ -533,6 +538,9 @@ void BTCpuProcessInit() {
+ 
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_INTERPRETER_INSTALLED, "0");
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "0");
++  // wine-macos-native: macOS arm64 cannot map below 4GB; Wine places the 32-bit
++  // address space at this base (must match WOW64_GUEST_BASE in Wine).
++  FEXCore::GuestMemoryBase = 0x10000000000ULL;
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_FILENAME, ExecutablePath);
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_CONFIG_NAME, ExecutableName);
+ 
+@@ -576,8 +584,9 @@ void BTCpuProcessInit() {
+   NtAllocateVirtualMemory(NtCurrentProcess(), &Addr, (1U << 31) - 1, &Size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+   InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Addr), Size, PAGE_EXECUTE);
+   *reinterpret_cast<uint32_t*>(Addr) = 0x2ecd2ecd;
+-  BridgeInstrs::Syscall = Addr;
+-  BridgeInstrs::UnixCall = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(Addr) + 2);
++  // Guest RIP values for the trampolines (32-bit guest addresses)
++  BridgeInstrs::Syscall = reinterpret_cast<void*>(FEX::Windows::HostToGuest(reinterpret_cast<uintptr_t>(Addr)));
++  BridgeInstrs::UnixCall = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(BridgeInstrs::Syscall) + 2);
+ 
+   const auto Sym = GetProcAddress(NtDll, "__wine_unix_call_dispatcher");
+   if (Sym) {
