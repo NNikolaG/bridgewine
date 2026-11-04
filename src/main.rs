@@ -1,5 +1,6 @@
 //! BridgeWine CLI (`bw`).
 
+mod arm64;
 mod bottle;
 mod doctor;
 mod dxmt;
@@ -123,6 +124,11 @@ enum RuntimeAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Eksperimentalno: native arm64 Wine + FEX (bez Rosette), za bench/fex-exceptions
+    InstallArm64 {
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Ispisi tag release-a za trenutne patch-eve (koristi CI)
     PatchedTag,
 }
@@ -173,6 +179,9 @@ fn main() -> ExitCode {
         Command::Runtime {
             action: RuntimeAction::InstallPatched { dry_run },
         } => wine_build::cmd_install_prebuilt(dry_run),
+        Command::Runtime {
+            action: RuntimeAction::InstallArm64 { dry_run },
+        } => arm64::cmd_install(dry_run),
         Command::Runtime {
             action: RuntimeAction::PatchedTag,
         } => {
