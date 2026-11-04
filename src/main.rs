@@ -129,6 +129,8 @@ enum RuntimeAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Ispisi tag release-a sa nasim FEX DLL-om (koristi CI)
+    FexTag,
     /// Ispisi tag release-a za trenutne patch-eve (koristi CI)
     PatchedTag,
 }
@@ -182,6 +184,12 @@ fn main() -> ExitCode {
         Command::Runtime {
             action: RuntimeAction::InstallArm64 { dry_run },
         } => arm64::cmd_install(dry_run),
+        Command::Runtime {
+            action: RuntimeAction::FexTag,
+        } => {
+            println!("{}", arm64::fex_tag());
+            ExitCode::SUCCESS
+        }
         Command::Runtime {
             action: RuntimeAction::PatchedTag,
         } => {

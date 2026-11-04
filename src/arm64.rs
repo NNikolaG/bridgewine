@@ -4,6 +4,10 @@
 //! Build: Irz-Z/wine-macos-native v0.1.0 (Wine 11.10 arm64, LGPL; FEX-2609, MIT).
 //! Za sada samo za mjerenje (bench/fex-exceptions): Rosetta trosi ~27 us po
 //! #UD izuzetku iz AoE3 zastite, ovde ide kroz native arm64 trap.
+//!
+//! Njihov `libarm64ecfex.dll` mijenjamo nasim (patches/fex-2609, CI workflow
+//! fex-arm64ec.yml): FEX-ov call-ret stek je sa 4K zastitnim stranicama koje na
+//! macOS-u (16K) ne rade, pa se program zaglavi posle ~196k izuzetaka.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +21,75 @@ pub const URL: &str = "https://github.com/Irz-Z/wine-macos-native/releases/downl
 pub const SHA256: &str = "355d5fc366c35c71b5a3e1ed95f6d208fd1f13ac12ae03ad5880a9186c63c5cb";
 /// Odvojen prefiks: arm64 system32 se ne moze mijesati sa x86_64 bottle-ovima.
 pub const BOTTLE: &str = "arm64-fex";
+
+pub const FEX_PATCHES: [(&str, &str); 5] = [
+    (
+        "0001-load-teb-from-tsd-slot-and-wow64-guest-base.patch",
+        include_str!("../patches/fex-2609/0001-load-teb-from-tsd-slot-and-wow64-guest-base.patch"),
+    ),
+    (
+        "0003-callret-stack-guard-whole-host-pages.patch",
+        include_str!("../patches/fex-2609/0003-callret-stack-guard-whole-host-pages.patch"),
+    ),
+    (
+        "0004-reset-callret-stack-on-guest-exception.patch",
+        include_str!("../patches/fex-2609/0004-reset-callret-stack-on-guest-exception.patch"),
+    ),
+    (
+        "llvm-mingw-0001-ntcurrentteb-tsd.patch",
+        include_str!("../patches/fex-2609/llvm-mingw-0001-ntcurrentteb-tsd.patch"),
+    ),
+    (
+        "vixl-0002-include-map.patch",
+        include_str!("../patches/fex-2609/vixl-0002-include-map.patch"),
+    ),
+];
+
+/// Tag release-a sa nasim FEX DLL-om; mijenja se sa patch-evima (kao wine_build).
+pub fn fex_tag() -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for (name, text) in FEX_PATCHES {
+        for b in name.bytes().chain([0]).chain(text.bytes()).chain([0]) {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    format!("fex-2609-bw-{:012x}", h >> 16)
+}
+
+pub fn fex_dll_url() -> String {
+    format!(
+        "https://github.com/{}/releases/download/{}/libarm64ecfex.dll",
+        crate::wine_build::RELEASE_REPO,
+        fex_tag()
+    )
+}
+
+fn fex_dll(home: &Path) -> PathBuf {
+    runtime_dir(home).join("lib/wine/aarch64-windows/libarm64ecfex.dll")
+}
+
+fn fex_marker(home: &Path) -> PathBuf {
+    fex_dll(home).with_extension("dll.bw-tag")
+}
+
+/// Skini nas FEX DLL i stavi ga umjesto originala (original ostaje kao .orig).
+pub fn fex_invocations(home: &Path) -> Vec<Invocation> {
+    let dll = fex_dll(home).display().to_string();
+    let cached = home
+        .join("cache")
+        .join(format!("libarm64ecfex-{}.dll", fex_tag()))
+        .display()
+        .to_string();
+    let mut steps = download_invocations(&fex_dll_url(), Path::new(&cached));
+    let swap = format!(
+        "[ -e '{dll}.orig' ] || cp '{dll}' '{dll}.orig'; cp '{cached}' '{dll}' && echo {} > '{}'",
+        fex_tag(),
+        fex_marker(home).display()
+    );
+    steps.push(inv("sh", &["-c", &swap], &[]));
+    steps
+}
 
 pub fn runtime_dir(home: &Path) -> PathBuf {
     runtimes_dir(home).join(format!("wine-arm64-fex-{VERSION}"))
@@ -126,6 +199,13 @@ fn install(dry_run: bool) -> Result<(), String> {
             steps.drain(..2);
         }
     }
+    let tag = fex_tag();
+    if fs::read_to_string(fex_marker(&home))
+        .map(|t| t.trim() != tag)
+        .unwrap_or(true)
+    {
+        steps.extend(fex_invocations(&home));
+    }
     if !bottle_path(&home, BOTTLE).join("drive_c").exists() {
         steps.extend(prefix_invocations(&home));
     }
@@ -135,7 +215,7 @@ fn install(dry_run: bool) -> Result<(), String> {
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     println!(
-        "arm64 Wine + FEX {VERSION}: {} {} <program.exe>",
+        "arm64 Wine {VERSION} + FEX {tag}: {} {} <program.exe>",
         env.join(" "),
         wine_bin(&home).display()
     );
@@ -162,6 +242,17 @@ mod tests {
                 "/h/runtimes/wine-arm64-fex-0.1.0"
             ]
         );
+    }
+
+    #[test]
+    fn fex_dll_is_swapped_and_original_kept() {
+        let inv = fex_invocations(Path::new("/h"));
+        assert_eq!(inv[0].program, "curl");
+        assert!(inv[0].args.contains(&fex_dll_url()));
+        assert!(fex_tag().starts_with("fex-2609-bw-"));
+        let swap = &inv[2].args[1];
+        assert!(swap.contains("libarm64ecfex.dll.orig"), "{swap}");
+        assert!(swap.contains(&fex_tag()), "{swap}");
     }
 
     #[test]

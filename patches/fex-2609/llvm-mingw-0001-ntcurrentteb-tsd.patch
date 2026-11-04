@@ -1,0 +1,25 @@
+--- llvm-mingw-20260922-ucrt-macos-universal/generic-w64-mingw32/include/winnt.h.orig	2026-10-05 08:52:30
++++ llvm-mingw-20260922-ucrt-macos-universal/generic-w64-mingw32/include/winnt.h	2026-10-05 08:52:30
+@@ -10393,11 +10393,22 @@
+     PVOID GetFiberData(VOID);
+ 
+ #if defined (__aarch64__) || defined(__arm64ec__)
++#ifdef WINE_MACOS_TSD_TEB
++    /* Wine macOS ARM64 port: x18 is not preserved by the kernel; read the TEB
++     * from pthread TSD slot 700 through TPIDRRO_EL0 instead. */
++    FORCEINLINE struct _TEB *NtCurrentTeb(VOID)
++    {
++        struct _TEB *teb;
++        __asm__("mrs %0, tpidrro_el0\n\tand %0, %0, #0xfffffffffffffff8\n\tldr %0, [%0, #5600]" : "=r" (teb));
++        return teb;
++    }
++#else
+     register struct _TEB *__mingw_current_teb __asm__("x18");
+     FORCEINLINE struct _TEB *NtCurrentTeb(VOID)
+     {
+         return __mingw_current_teb;
+     }
++#endif
+     FORCEINLINE PVOID GetCurrentFiber(VOID)
+     {
+         return (PVOID)(((PNT_TIB)NtCurrentTeb())->FiberData);

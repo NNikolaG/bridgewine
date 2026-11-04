@@ -27,3 +27,19 @@ wrongly and the game would break regardless of speed.
 Runtime: `bw runtime install-arm64` (Irz-Z/wine-macos-native v0.1.0: Wine 11.10 arm64,
 LGPL; FEX-2609, MIT; sha256-checked). It has no 32-bit x86 support yet and no
 DXVK/D3DMetal, so it is only for this measurement for now.
+
+## Results (MacBook Pro M5, 2026-11-04)
+
+| What | per exception |
+| --- | --- |
+| native arm64 SIGILL | 1.59 µs |
+| Rosetta + WineHQ 11.21 (ud2/pusha/daa/aad) | 18.1–19.6 µs |
+| arm64 Wine 11.10 + FEX (all four) | 3.1–3.5 µs, all `OK` |
+
+FEX is ~6x faster than Rosetta. Its stock DLL hung at 100% CPU after ~170–200k
+exceptions: native code calls the guest VEH without pushing a FEX call-ret stack entry,
+so every handler `ret` pops one, and the stack overflows after 3 MiB / 16 B = 196,608
+exceptions. FEX's 4K guard pages don't exist on macOS's 16K pages, so the overflow is
+never caught. `patches/fex-2609/0003` makes the guards whole host pages, `0004` resets
+the call-ret stack on every guest exception. Built by `.github/workflows/fex-arm64ec.yml`;
+`bw runtime install-arm64` swaps it in (original kept as `.orig`).
