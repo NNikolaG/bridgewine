@@ -3,9 +3,11 @@ name: FEX arm64ec
 # Gradi nas libarm64ecfex.dll (FEX-2609 + patches/fex-2609) za eksperimentalni
 # arm64 runtime (`bw runtime install-arm64`). DLL je PE, pa se gradi na Linuxu
 # sa llvm-mingw. Tag zavisi od patch-eva (`bw runtime fex-tag`).
+# Push i na radne grane: arm64 runtime je eksperimentalan, a Mac test treba
+# release prije merge-a (workflow_dispatch radi tek kad je fajl na main-u).
 on:
   push:
-    branches: [main]
+    branches: [main, 'claude/**']
     paths:
       - patches/fex-2609/**
       - src/arm64.rs
