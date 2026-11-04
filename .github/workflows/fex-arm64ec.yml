@@ -1,0 +1,114 @@
+name: FEX arm64ec
+
+# Gradi nas libarm64ecfex.dll (FEX-2609 + patches/fex-2609) za eksperimentalni
+# arm64 runtime (`bw runtime install-arm64`). DLL je PE, pa se gradi na Linuxu
+# sa llvm-mingw. Tag zavisi od patch-eva (`bw runtime fex-tag`).
+# Push i na radne grane: arm64 runtime je eksperimentalan, a Mac test treba
+# release prije merge-a (workflow_dispatch radi tek kad je fajl na main-u).
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths:
+      - patches/fex-2609/**
+      - src/arm64.rs
+      - .github/workflows/fex-arm64ec.yml
+  pull_request:
+    paths:
+      - patches/fex-2609/**
+      - .github/workflows/fex-arm64ec.yml
+  workflow_dispatch:
+
+concurrency:
+  group: fex-arm64ec-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  FEX_TAG: FEX-2609
+  LLVM_MINGW: llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Tag release-a
+        id: tag
+        run: |
+          tag=$(cargo run -q --locked -- runtime fex-tag)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag"
+
+      - name: Vec postoji?
+        id: exists
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Izvorni kod i alati
+        if: steps.exists.outputs.yes != 'true'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ninja-build cmake
+          git clone -q --depth 1 --branch "$FEX_TAG" https://github.com/FEX-Emu/FEX fex
+          cd fex
+          for s in External/fmt External/range-v3 External/rpmalloc External/tracy \
+                   External/unordered_dense External/vixl External/xxhash External/zydis \
+                   Source/Common/cpp-optparse External/Vulkan-Headers External/drm-headers; do
+            git submodule update --init --depth 1 "$s"
+          done
+          (cd External/zydis && git submodule update --init --depth 1)
+          cd ..
+          curl -fsSL -o lm.tar.xz "https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/$LLVM_MINGW.tar.xz"
+          tar -xJf lm.tar.xz
+
+      - name: Patch-evi
+        if: steps.exists.outputs.yes != 'true'
+        run: |
+          P=$GITHUB_WORKSPACE/patches/fex-2609
+          (cd "$LLVM_MINGW" && sed 's#llvm-mingw-20260922-ucrt-macos-universal/##g' "$P/llvm-mingw-0001-ntcurrentteb-tsd.patch" | patch -p0)
+          cd fex
+          (cd External/vixl && git apply "$P/vixl-0002-include-map.patch")
+          for p in "$P"/0*.patch; do echo "== $p"; git apply "$p"; done
+
+      - name: Build
+        if: steps.exists.outputs.yes != 'true'
+        run: |
+          export PATH=$GITHUB_WORKSPACE/$LLVM_MINGW/bin:$PATH
+          cmake -S fex -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/fex/Data/CMake/toolchain_mingw.cmake \
+            -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=False -DENABLE_LTO=False \
+            -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DENABLE_CCACHE=False \
+            -DCMAKE_C_FLAGS=-DWINE_MACOS_TSD_TEB -DCMAKE_CXX_FLAGS=-DWINE_MACOS_TSD_TEB
+          ninja -C build arm64ecfex
+          mkdir -p dist
+          cp "$(find build -name libarm64ecfex.dll | head -1)" dist/
+          file dist/libarm64ecfex.dll
+          (cd dist && sha256sum libarm64ecfex.dll > libarm64ecfex.dll.sha256 && cat libarm64ecfex.dll.sha256)
+
+      - uses: actions/upload-artifact@v4
+        if: steps.exists.outputs.yes != 'true'
+        with:
+          name: ${{ steps.tag.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Release
+        if: github.event_name != 'pull_request' && steps.exists.outputs.yes != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" dist/libarm64ecfex.dll dist/libarm64ecfex.dll.sha256 \
+            --target "${{ github.sha }}" \
+            --title "FEX ARM64EC + BridgeWine patch-evi (${{ steps.tag.outputs.tag }})" \
+            --notes "FEX $FEX_TAG (MIT) + patches/fex-2609. Za \`bw runtime install-arm64\`." \
+            --prerelease

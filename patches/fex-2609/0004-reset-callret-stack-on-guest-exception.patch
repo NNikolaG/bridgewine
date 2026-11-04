@@ -1,0 +1,17 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 7b04692..155d0b1 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -510,6 +510,12 @@ static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT&
+     GuestContext.Pc -= 1;
+   }
+ 
++  // Native code calls the guest handlers without pushing a call-ret entry, so every
++  // handler RET pops one: a program that raises #UD in a loop (AoE3 DE's protection,
++  // ~16k/s) drifts the call-ret stack by 16 bytes per exception until it overflows.
++  // The guest stack is being unwound here anyway, so start over from the default slot.
++  Thread->CurrentFrame->State.callret_sp = FEX::Windows::CallRetStack::GetInfoThread(Thread).DefaultLocation;
++
+   NtRaiseExceptionNative(&GuestRec, &GuestContext, FirstChance);
+ }
+ 
