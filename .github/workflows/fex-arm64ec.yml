@@ -86,7 +86,7 @@ jobs:
           cmake -S fex -B build -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/fex/Data/CMake/toolchain_mingw.cmake \
             -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=False \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=False -DENABLE_LTO=False \
             -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DENABLE_CCACHE=False \
             -DCMAKE_C_FLAGS=-DWINE_MACOS_TSD_TEB -DCMAKE_CXX_FLAGS=-DWINE_MACOS_TSD_TEB
           ninja -C build arm64ecfex

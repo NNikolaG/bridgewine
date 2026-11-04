@@ -8,13 +8,13 @@ on:
   push:
     branches: [main]
     paths:
-      - patches/**
+      - patches/wine-*/**
       - src/wine_build.rs
       - src/runtime.rs
       - .github/workflows/wine-patched.yml
   pull_request:
     paths:
-      - patches/**
+      - patches/wine-*/**
       - src/wine_build.rs
       - .github/workflows/wine-patched.yml
   workflow_dispatch:
