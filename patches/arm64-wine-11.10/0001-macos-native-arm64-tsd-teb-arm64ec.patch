@@ -1,0 +1,707 @@
+diff -ruN orig-port/dlls/kernel32/process.c src-port/dlls/kernel32/process.c
+--- orig-port/dlls/kernel32/process.c	2026-10-18 00:48:53
++++ src-port/dlls/kernel32/process.c	2026-10-10 10:15:18
+@@ -42,7 +42,7 @@
+ /* arm64 macOS: KUSER_SHARED_DATA cannot live at 0x7ffe0000 (the kernel forces a
+  * 4GB __PAGEZERO); it is mapped at 0x17ffe0000 instead.  i386/x86_64 processes
+  * (Rosetta hybrid slice) can and must use the standard Windows address. */
+-#ifdef __aarch64__
++#if defined(__aarch64__) || defined(__arm64ec__)
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000;
+ #else
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
+diff -ruN orig-port/dlls/kernel32/sync.c src-port/dlls/kernel32/sync.c
+--- orig-port/dlls/kernel32/sync.c	2026-10-18 00:48:53
++++ src-port/dlls/kernel32/sync.c	2026-10-10 10:15:18
+@@ -45,7 +45,7 @@
+ /* arm64 macOS: KUSER_SHARED_DATA cannot live at 0x7ffe0000 (the kernel forces a
+  * 4GB __PAGEZERO); it is mapped at 0x17ffe0000 instead.  i386/x86_64 processes
+  * (Rosetta hybrid slice) can and must use the standard Windows address. */
+-#ifdef __aarch64__
++#if defined(__aarch64__) || defined(__arm64ec__)
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000;
+ #else
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
+diff -ruN orig-port/dlls/kernelbase/sync.c src-port/dlls/kernelbase/sync.c
+--- orig-port/dlls/kernelbase/sync.c	2026-10-18 00:48:53
++++ src-port/dlls/kernelbase/sync.c	2026-10-10 10:15:18
+@@ -42,7 +42,7 @@
+ /* arm64 macOS: KUSER_SHARED_DATA cannot live at 0x7ffe0000 (the kernel forces a
+  * 4GB __PAGEZERO); it is mapped at 0x17ffe0000 instead.  i386/x86_64 processes
+  * (Rosetta hybrid slice) can and must use the standard Windows address. */
+-#ifdef __aarch64__
++#if defined(__aarch64__) || defined(__arm64ec__)
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000;
+ #else
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
+diff -ruN orig-port/dlls/ntdll/Makefile.in src-port/dlls/ntdll/Makefile.in
+--- orig-port/dlls/ntdll/Makefile.in	2026-10-18 00:48:53
++++ src-port/dlls/ntdll/Makefile.in	2026-10-10 10:34:59
+@@ -4,7 +4,7 @@
+ IMPORTLIB = ntdll
+ IMPORTS   = $(SYMCRYPT_PE_LIBS) $(ZLIB_PE_LIBS) $(MUSL_PE_LIBS)
+ EXTRAINCL = $(SYMCRYPT_PE_CFLAGS) $(ZLIB_PE_CFLAGS)
+-UNIX_CFLAGS  = $(HWLOC_CFLAGS)
++UNIX_CFLAGS  = $(HWLOC_CFLAGS) -DWINE_WOW64_GUEST_BASE
+ UNIX_LIBS    = $(IOKIT_LIBS) $(COREFOUNDATION_LIBS) $(CORESERVICES_LIBS) $(RT_LIBS) $(PTHREAD_LIBS) $(I386_LIBS) $(PROCSTAT_LIBS) $(HWLOC_LIBS)
+ 
+ EXTRADLLFLAGS = -nodefaultlibs
+diff -ruN orig-port/dlls/ntdll/signal_arm64.c src-port/dlls/ntdll/signal_arm64.c
+--- orig-port/dlls/ntdll/signal_arm64.c	2026-10-18 00:48:53
++++ src-port/dlls/ntdll/signal_arm64.c	2026-10-10 10:15:18
+@@ -363,7 +363,10 @@
+                    ".seh_handler user_callback_handler, @except\n\t"
+                    "ldr x0, [sp]\n\t"             /* args */
+                    "ldp w1, w2, [sp, #0x08]\n\t"  /* len, id */
+-                   "ldr x3, [x18, 0x60]\n\t"      /* peb */
++                   "mrs x3, tpidrro_el0\n\t"   /* TEB from the TSD slot (x18 is not reliable on macOS) */
++                   "and x3, x3, #0xfffffffffffffff8\n\t"
++                   "ldr x3, [x3, #(8 * 700)]\n\t"
++                   "ldr x3, [x3, #0x60]\n\t"      /* peb */
+                    "ldr x3, [x3, 0x58]\n\t"       /* peb->KernelCallbackTable */
+                    "ldr x15, [x3, x2, lsl #3]\n\t"
+                    "blr x15\n\t"
+@@ -763,7 +766,10 @@
+                    "ldr w2, [x1]\n\t"            /* context->ContextFlags */
+                    "orr w2, w2, #0x20000000\n\t" /* CONTEXT_UNWOUND_TO_CALL */
+                    "str w2, [x1]\n\t"
+-                   "ldr x3, [x18, #0x60]\n\t"    /* peb */
++                   "mrs x3, tpidrro_el0\n\t"   /* TEB from the TSD slot (x18 is not reliable on macOS) */
++                   "and x3, x3, #0xfffffffffffffff8\n\t"
++                   "ldr x3, [x3, #(8 * 700)]\n\t"
++                   "ldr x3, [x3, #0x60]\n\t"    /* peb */
+                    "ldrb w2, [x3, #2]\n\t"       /* peb->BeingDebugged */
+                    "cbnz w2, 1f\n\t"
+                    "bl dispatch_exception\n"
+@@ -867,7 +873,10 @@
+                    ".seh_save_fplr_x 16\n\t"
+                    ".seh_endprologue\n\t"
+                    ".seh_handler DbgUiRemoteBreakin_handler, @except\n\t"
+-                   "ldr x0, [x18, #0x60]\n\t"       /* NtCurrentTeb()->Peb */
++                   "mrs x0, tpidrro_el0\n\t"   /* TEB from the TSD slot (x18 is not reliable on macOS) */
++                   "and x0, x0, #0xfffffffffffffff8\n\t"
++                   "ldr x0, [x0, #(8 * 700)]\n\t"
++                   "ldr x0, [x0, #0x60]\n\t"       /* NtCurrentTeb()->Peb */
+                    "ldrb w0, [x0, 0x02]\n\t"        /* peb->BeingDebugged */
+                    "cbz w0, 1f\n\t"
+                    "bl DbgBreakPoint\n"
+diff -ruN orig-port/dlls/ntdll/signal_arm64ec.c src-port/dlls/ntdll/signal_arm64ec.c
+--- orig-port/dlls/ntdll/signal_arm64ec.c	2026-10-18 00:48:53
++++ src-port/dlls/ntdll/signal_arm64ec.c	2026-10-10 10:15:18
+@@ -1372,7 +1372,10 @@
+                    ".seh_handler user_callback_handler, @except\n\t"
+                    "ldr x0, [sp]\n\t"             /* args */
+                    "ldp w1, w2, [sp, #0x08]\n\t"  /* len, id */
+-                   "ldr x3, [x18, 0x60]\n\t"      /* peb */
++                   "mrs x3, tpidrro_el0\n\t"   /* TEB from the TSD slot (x18 is not reliable on macOS) */
++                   "and x3, x3, #0xfffffffffffffff8\n\t"
++                   "ldr x3, [x3, #(8 * 700)]\n\t"
++                   "ldr x3, [x3, #0x60]\n\t"      /* peb */
+                    "ldr x3, [x3, 0x58]\n\t"       /* peb->KernelCallbackTable */
+                    "ldr x15, [x3, x2, lsl #3]\n\t"
+                    "blr x15\n\t"
+@@ -1896,7 +1899,10 @@
+     asm( ".seh_proc \"#arm64x_check_call\"\n\t"
+          ".seh_endprologue\n\t"
+          /* check for EC code */
+-         "ldr x16, [x18, #0x60]\n\t"        /* peb */
++         "mrs x16, tpidrro_el0\n\t"   /* TEB from the TSD slot (x18 is not reliable on macOS) */
++         "and x16, x16, #0xfffffffffffffff8\n\t"
++         "ldr x16, [x16, #(8 * 700)]\n\t"
++         "ldr x16, [x16, #0x60]\n\t"        /* peb */
+          "lsr x17, x11, #18\n\t"            /* dest / page_size / 64 */
+          "ldr x16, [x16, #0x368]\n\t"       /* peb->EcCodeBitMap */
+          "lsr x9, x11, #12\n\t"             /* dest / page_size */
+@@ -2052,7 +2058,10 @@
+          "ldr w2, [x1, #0x30]\n\t"     /* context->ContextFlags */
+          "orr w2, w2, #0x20000000\n\t" /* CONTEXT_UNWOUND_TO_CALL */
+          "str w2, [x1, #0x30]\n\t"
+-         "ldr x3, [x18, #0x60]\n\t"    /* peb */
++         "mrs x3, tpidrro_el0\n\t"   /* TEB from the TSD slot (x18 is not reliable on macOS) */
++         "and x3, x3, #0xfffffffffffffff8\n\t"
++         "ldr x3, [x3, #(8 * 700)]\n\t"
++         "ldr x3, [x3, #0x60]\n\t"    /* peb */
+          "ldrb w2, [x3, #2]\n\t"       /* peb->BeingDebugged */
+          "cbnz w2, 1f\n\t"
+          "bl \"#dispatch_exception\"\n"
+@@ -2156,7 +2165,10 @@
+          ".seh_save_fplr_x 16\n\t"
+          ".seh_endprologue\n\t"
+          ".seh_handler DbgUiRemoteBreakin_handler, @except\n\t"
+-         "ldr x0, [x18, #0x60]\n\t"  /* NtCurrentTeb()->Peb */
++         "mrs x0, tpidrro_el0\n\t"   /* TEB from the TSD slot (x18 is not reliable on macOS) */
++         "and x0, x0, #0xfffffffffffffff8\n\t"
++         "ldr x0, [x0, #(8 * 700)]\n\t"
++         "ldr x0, [x0, #0x60]\n\t"  /* NtCurrentTeb()->Peb */
+          "ldrb w0, [x0, 0x02]\n\t"   /* peb->BeingDebugged */
+          "cbz w0, 1f\n\t"
+          "bl \"#DbgBreakPoint\"\n"
+diff -ruN orig-port/dlls/ntdll/thread.c src-port/dlls/ntdll/thread.c
+--- orig-port/dlls/ntdll/thread.c	2026-10-18 00:48:53
++++ src-port/dlls/ntdll/thread.c	2026-10-10 10:15:18
+@@ -38,7 +38,7 @@
+ /* arm64 macOS: KUSER_SHARED_DATA cannot live at 0x7ffe0000 (the kernel forces a
+  * 4GB __PAGEZERO); it is mapped at 0x17ffe0000 instead.  i386/x86_64 processes
+  * (Rosetta hybrid slice) can and must use the standard Windows address. */
+-#ifdef __aarch64__
++#if defined(__aarch64__) || defined(__arm64ec__)
+ struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x17ffe0000;
+ #else
+ struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
+diff -ruN orig-port/dlls/ntdll/unix/signal_arm64.c src-port/dlls/ntdll/unix/signal_arm64.c
+--- orig-port/dlls/ntdll/unix/signal_arm64.c	2026-10-18 00:48:53
++++ src-port/dlls/ntdll/unix/signal_arm64.c	2026-10-10 10:15:18
+@@ -28,6 +28,7 @@
+ 
+ #include <assert.h>
+ #include <pthread.h>
++#include <dlfcn.h>
+ #include <signal.h>
+ #include <stdlib.h>
+ #include <stdarg.h>
+@@ -783,13 +784,44 @@
+ static pthread_key_t teb_pthread_key;
+ /* byte offset of the TEB TSD slot from (TPIDRRO_EL0 & ~7); == key * sizeof(void*) */
+ unsigned long __wine_teb_tsd_offset __attribute__((visibility("hidden")));
++
++static int x18_debug;
+ 
+ static void init_teb_tsd_slot(void)
+ {
+-    pthread_key_create( &teb_pthread_key, NULL );
++    pthread_key_t spare[768];
++    unsigned int i, count = 0;
++
++    x18_debug = getenv( "WINE_X18_DEBUG" ) != NULL;
++    /* PE code reads the TEB from a fixed TSD slot (WINE_MACOS_TEB_TSD_KEY in
++     * winnt.h).  Keys are handed out lowest-free first, so allocate up to the
++     * fixed one and release the spare keys again. */
++    for (;;)
++    {
++        if (pthread_key_create( &teb_pthread_key, NULL ))
++        {
++            fprintf( stderr, "wine: failed to allocate the TEB TSD slot\n" );
++            abort();
++        }
++        if (teb_pthread_key == 700) break;
++        if (teb_pthread_key > 700 || count == ARRAY_SIZE(spare))
++        {
++            fprintf( stderr, "wine: TEB TSD slot 700 is already in use (got %lu)\n", (unsigned long)teb_pthread_key );
++            abort();
++        }
++        spare[count++] = teb_pthread_key;
++    }
++    for (i = 0; i < count; i++) pthread_key_delete( spare[i] );
+     __wine_teb_tsd_offset = (unsigned long)teb_pthread_key * sizeof(void *);
+ }
+ 
++/* asm to load the per-thread TEB into reg without touching x18 (which the kernel
++ * may zero at any instruction boundary).  Uses the fixed TSD key 700. */
++#define LOAD_TEB_REG( reg ) \
++    "mrs " reg ", TPIDRRO_EL0\n\t" \
++    "and " reg ", " reg ", #0xfffffffffffffff8\n\t" \
++    "ldr " reg ", [" reg ", #(8 * 700)]\n\t"
++
+ /* asm to load the per-thread TEB into x18, clobbering one scratch register */
+ #define LOAD_TEB_X18( scratch ) \
+     "mrs x18, TPIDRRO_EL0\n\t" \
+@@ -809,10 +841,44 @@
+ static inline void set_teb_register( struct thread_data *data )
+ {
+     if (data && data->teb) pthread_setspecific( teb_pthread_key, data->teb );
++}
++
++/* TRUE if pc is in host (Mach-O) code, FALSE if it is in a Wine-mapped PE image.
++ * PE code can run on the kernel stack as a callback from unix code, so an SP in
++ * the syscall range does not mean that x18 (the TEB register) is irrelevant. */
++static BOOL is_host_code( ULONG_PTR pc )
++{
++    Dl_info info;
++    return dladdr( (void *)pc, &info ) != 0;
+ }
+ 
++/* Scan backwards from pc (within the current function) for an instruction that
++ * materialised register rn from x18 (mov xN,x18 / add xN,x18,#imm).  If found,
++ * a zero rn is a stale copy of the clobbered TEB register rather than a real NULL. */
++/* TRUE if the instruction at pc is a load/store whose base register is x18 itself. */
++static BOOL is_x18_based_ldst( ULONG_PTR pc )
++{
++    unsigned int instr = *(unsigned int *)pc;
++    return (instr & 0x0a000000) == 0x08000000 && ((instr >> 5) & 0x1f) == 18;
++}
++
++static BOOL is_x18_derived_reg( ULONG_PTR pc, unsigned int rn )
++{
++    unsigned int k;
++    for (k = 1; k <= 400; k++)
++    {
++        unsigned int in = *(unsigned int *)(pc - 4 * k);
++        if ((in & 0xffffffe0) == (0xaa1203e0 | 0) && (in & 0x1f) == rn) return TRUE;           /* mov xN, x18 */
++        if ((in & 0xff8003e0) == 0x91000240 && (in & 0x1f) == rn) return TRUE;                 /* add xN, x18, #imm{,lsl 12} */
++        if ((in & 0xffc07fff) == 0xa9807bfd) break;                                              /* stp x29,x30,[sp,#-n]! : function start */
++    }
++    return FALSE;
++}
++
+ /* redirect a signal resume through the x18 trampoline */
+-static inline void redirect_user_resume( ucontext_t *sigcontext )
++/* Resume through the x18 trampoline.  This clobbers x16, so it is only used as a
++ * last resort for an x18-relative access that could not be emulated. */
++static inline void redirect_via_trampoline( ucontext_t *sigcontext )
+ {
+     struct thread_data *data = get_thread_data();
+     ULONG_PTR pc = PC_sig( sigcontext );
+@@ -844,6 +910,14 @@
+     PC_sig( sigcontext ) = (ULONG_PTR)__wine_macos_x18_trampoline;
+ }
+ 
++/* The kernel zeroes x18 on every return to user mode, so restoring it on a
++ * signal resume buys nothing; Wine's PE code reads the TEB from the TSD slot.
++ * Just keep that slot current. */
++static inline void redirect_user_resume( ucontext_t *sigcontext )
++{
++    set_teb_register( get_thread_data() );
++}
++
+ static inline void restore_teb_register( ucontext_t *sigcontext )
+ {
+     set_teb_register( get_thread_data() );
+@@ -1038,20 +1112,20 @@
+                    "mrs x1, fpcr\n\t"
+                    "mrs x2, fpsr\n\t"
+                    "bfi x1, x2, #0, #32\n\t"
+-                   "ldr x2, [x18]\n\t"            /* teb->Tib.ExceptionList */
++                   "ldr x2, [x4]\n\t"             /* teb->Tib.ExceptionList (x18 may be zeroed by the kernel) */
+                    "stp x1, x2, [x29, #0xb0]\n\t"
+ 
+-                   "ldr x7, [x18, #0x378]\n\t"    /* thread_data->syscall_frame */
++                   "ldr x7, [x4, #0x378]\n\t"     /* thread_data->syscall_frame */
+                    "sub x1, sp, #0x330\n\t"       /* sizeof(struct syscall_frame) */
+-                   "str x1, [x18, #0x378]\n\t"    /* thread_data->syscall_frame */
++                   "str x1, [x4, #0x378]\n\t"     /* thread_data->syscall_frame */
+                    "add x8, x29, #0xd0\n\t"
+                    "stp x7, x8, [x1, #0x110]\n\t" /* frame->prev_frame,syscall_cfa */
+-                   "ldr w11, [x18, #0x380]\n\t"   /* thread_data->syscall_trace */
++                   "ldr w11, [x4, #0x380]\n\t"    /* thread_data->syscall_trace */
+                    "cbnz x11, 1f\n\t"
+                    /* switch to user stack */
+                    "mov sp, x0\n\t"               /* user_sp */
+                    "br x3\n"
+-                   "1:\tmov x19, x18\n\t"         /* teb */
++                   "1:\tmov x19, x4\n\t"          /* teb */
+                    "mov x20, x0\n\t"              /* user_sp */
+                    "mov x21, x3\n\t"              /* func */
+                    "mov sp, x1\n\t"
+@@ -1280,8 +1354,12 @@
+          * and retries.  Cannot loop: after the retry x18 is the TEB, so a
+          * genuine fault at the same PC has x18 >= 4GB and falls through. */
+         static __thread ULONG_PTR last_x18_repair_pc;
++        /* x18 is zeroed by the kernel on every return to user mode, so a small x18 alone
++         * proves nothing: only a sub-4GB fault address can come from it. */
+         if (d && d->teb && REGn_sig( 18, sigcontext ) < 0x100000000ull &&
+-            !is_inside_syscall( d, SP_sig( sigcontext ) ))
++            (ULONG_PTR)siginfo->si_addr < 0x4000 &&
++            !is_host_code( PC_sig( sigcontext ) ) && is_x18_based_ldst( PC_sig( sigcontext ) ) &&
++            (!is_inside_syscall( d, SP_sig( sigcontext ) ) || !is_host_code( PC_sig( sigcontext ) )))
+         {
+             ULONG_PTR si = (ULONG_PTR)siginfo->si_addr;
+             set_teb_register( d );
+@@ -1293,8 +1371,10 @@
+              * that a plain retry cannot, because the derived register is already
+              * wrong.  If the instruction isn't a recognised LDR/STR, emulate
+              * does nothing and we fall back to reloading x18 and retrying. */
+-            if (si < 0x100000000ull) emulate_x18_relative_ldst( sigcontext, d->teb, si );
+-            redirect_user_resume( sigcontext );
++            if (si < 0x100000000ull && emulate_x18_relative_ldst( sigcontext, d->teb, si ))
++                redirect_user_resume( sigcontext );
++            else
++                redirect_via_trampoline( sigcontext );
+             return;
+         }
+         /* Deferred variant of the same bug: a pointer ARITHMETICALLY derived
+@@ -1308,8 +1388,8 @@
+          * (base += teb) and retry - this also heals every subsequent use of
+          * the register and is addressing-mode agnostic.  Genuine NULL derefs
+          * keep faulting: their base register is 0, which is excluded. */
+-        else if (d && d->teb && (ULONG_PTR)siginfo->si_addr < 0x2000 &&
+-                 !is_inside_syscall( d, SP_sig( sigcontext ) ))
++        else if (d && d->teb && (ULONG_PTR)siginfo->si_addr < 0x4000 &&
++                 (!is_inside_syscall( d, SP_sig( sigcontext ) ) || !is_host_code( PC_sig( sigcontext ) )))
+         {
+             ULONG_PTR si = (ULONG_PTR)siginfo->si_addr;
+             unsigned int instr = *(unsigned int *)PC_sig( sigcontext );
+@@ -1321,7 +1401,8 @@
+                 {
+                     ULONG_PTR base = REGn_sig( rn, sigcontext );
+                     LONG_PTR diff = (LONG_PTR)(si - base);
+-                    if (base && base < 0x2000 && diff >= -0x100 && diff < 0x1000)
++                    if (base && base < 0x4000 && diff >= -0x100 && diff < 0x1000 &&
++                        is_x18_derived_reg( PC_sig( sigcontext ), rn ))
+                     {
+                         REGn_sig( rn, sigcontext ) = base + (ULONG_PTR)d->teb;
+                         redirect_user_resume( sigcontext );
+@@ -1335,8 +1416,7 @@
+                      * the immediate code neighbourhood (same function), and never for
+                      * offset 0 - SEH-guarded NULL probes (lstrlen etc.) must still
+                      * fault. */
+-                    if (!base && si >= 8 && last_x18_repair_pc &&
+-                        pc_delta >= -0x1000 && pc_delta <= 0x1000)
++                    if (!base && si >= 8 && is_x18_derived_reg( PC_sig( sigcontext ), rn ))
+                     {
+                         REGn_sig( rn, sigcontext ) = (ULONG_PTR)d->teb;
+                         redirect_user_resume( sigcontext );
+@@ -1377,7 +1457,10 @@
+                 TRACE( "repairing in-syscall x18 clobber pc=%p addr=%p x18=%p\n",
+                        (void *)PC_sig( sigcontext ), (void *)si, (void *)x18 );
+                 set_teb_register( d );
+-                redirect_user_resume( sigcontext );
++                if (emulate_x18_relative_ldst( sigcontext, d->teb, si - x18 ))
++                    redirect_user_resume( sigcontext );
++                else
++                    redirect_via_trampoline( sigcontext );
+                 return;
+             }
+         }
+@@ -1422,6 +1505,32 @@
+     if (!virtual_handle_fault( data, &rec, (void *)SP_sig(sigcontext) )) { redirect_user_resume( sigcontext ); return; }
+     if (handle_syscall_fault( data, sigcontext, &rec )) { redirect_user_resume( sigcontext ); return; }
+ 
++#ifdef __APPLE__
++    if (x18_debug)
++    {
++        static int excnt;
++        if (excnt++ < 8)
++        {
++            unsigned int i;
++            fprintf( stderr, "x18dbg RAISE #%d pc=%p lr=%p sp=%p fault=%p x18=%p insys=%d host=%d instr=%08x\n", excnt,
++                     (void *)PC_sig( sigcontext ), (void *)LR_sig( sigcontext ), (void *)SP_sig( sigcontext ),
++                     siginfo->si_addr, (void *)REGn_sig( 18, sigcontext ),
++                     is_inside_syscall( data, SP_sig( sigcontext ) ), is_host_code( PC_sig( sigcontext ) ),
++                     is_host_code( PC_sig( sigcontext ) ) ? 0 : *(unsigned int *)PC_sig( sigcontext ) );
++            for (i = 0; i < 31; i += 4)
++                fprintf( stderr, "x18dbg   x%-2u=%016lx x%-2u=%016lx x%-2u=%016lx x%-2u=%016lx\n",
++                         i, (unsigned long)REGn_sig( i, sigcontext ), i + 1, (unsigned long)REGn_sig( i + 1, sigcontext ),
++                         i + 2, (unsigned long)REGn_sig( i + 2, sigcontext ), i + 3, i + 3 < 31 ? (unsigned long)REGn_sig( i + 3, sigcontext ) : 0ul );
++            if (!is_host_code( PC_sig( sigcontext ) ))
++            {
++                const unsigned int *code = (const unsigned int *)(PC_sig( sigcontext ) & ~(ULONG_PTR)0xff) ;
++                fprintf( stderr, "x18dbg   code @%p:", code );
++                for (i = 0; i < 128; i++) fprintf( stderr, "%s%08x", (i % 8) ? " " : "\nx18dbg   ", code[i] );
++                fprintf( stderr, "\n" );
++            }
++        }
++    }
++#endif
+     save_context( &context, sigcontext );
+     setup_raise_exception( data, sigcontext, &rec, &context );
+ }
+@@ -1924,7 +2033,7 @@
+  */
+ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "hint 34\n\t" /* bti c */
+-                   "ldr x10, [x18, #0x378]\n\t" /* thread_data->syscall_frame */
++                   LOAD_TEB_REG( "x10" ) "ldr x10, [x10, #0x378]\n\t" /* thread_data->syscall_frame */
+                    "stp x18, x19, [x10, #0x90]\n\t"
+                    "stp x20, x21, [x10, #0xa0]\n\t"
+                    "stp x22, x23, [x10, #0xb0]\n\t"
+@@ -1975,7 +2084,7 @@
+                    __ASM_CFI(".cfi_offset 28, -0x68\n\t")
+                    "and x20, x8, #0xfff\n\t"    /* syscall number */
+                    "ubfx x21, x8, #12, #2\n\t"  /* syscall table number */
+-                   "ldr x16, [x18, #0x370]\n\t" /* thread_data->syscall_table */
++                   LOAD_TEB_REG( "x16" ) "ldr x16, [x16, #0x370]\n\t" /* thread_data->syscall_table */
+                    "add x21, x16, x21, lsl #5\n\t"
+                    "ldr x16, [x21, #16]\n\t"    /* table->ServiceLimit */
+                    "cmp x20, x16\n\t"
+@@ -1993,7 +2102,7 @@
+                    "cbnz x9, 1b\n"
+                    "2:\tldr x16, [x21]\n\t"     /* table->ServiceTable */
+                    "ldr x23, [x16, x20, lsl 3]\n\t"
+-                   "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
++                   LOAD_TEB_REG( "x11" ) "ldr w11, [x11, #0x380]\n\t" /* thread_data->syscall_trace */
+                    "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall") "\n\t"
+                    "blr x23\n\t"
+                    "mov sp, x22\n"
+@@ -2087,7 +2196,7 @@
+                     * x18; reload the TEB from the TSD slot before using it. */
+                    LOAD_TEB_X18( "x16" )
+ #endif
+-                   "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
++                   LOAD_TEB_REG( "x11" ) "ldr w11, [x11, #0x380]\n\t" /* thread_data->syscall_trace */
+                    "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall_ret") "\n\t"
+                    "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
+ 
+@@ -2097,7 +2206,7 @@
+  */
+ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+                    "hint 34\n\t" /* bti c */
+-                   "ldr x10, [x18, #0x378]\n\t" /* thread_data->syscall_frame */
++                   LOAD_TEB_REG( "x10" ) "ldr x10, [x10, #0x378]\n\t" /* thread_data->syscall_frame */
+                    "stp x18, x19, [x10, #0x90]\n\t"
+                    "stp x20, x21, [x10, #0xa0]\n\t"
+                    "stp x22, x23, [x10, #0xb0]\n\t"
+diff -ruN orig-port/dlls/ntdll/unix/system.c src-port/dlls/ntdll/unix/system.c
+--- orig-port/dlls/ntdll/unix/system.c	2026-10-18 00:48:53
++++ src-port/dlls/ntdll/unix/system.c	2026-10-10 10:15:18
+@@ -700,6 +700,29 @@
+         }
+         fclose( f );
+     }
++#elif defined(__APPLE__)
++    {
++        static const struct { const char *name; unsigned int feature; } sysctl_features[] =
++        {
++            { "hw.optional.armv8_crc32",      PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE },
++            { "hw.optional.arm.FEAT_AES",     PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE },
++            { "hw.optional.arm.FEAT_LSE",     PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE },
++            { "hw.optional.arm.FEAT_DotProd", PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE },
++            { "hw.optional.arm.FEAT_JSCVT",   PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE },
++            { "hw.optional.arm.FEAT_LRCPC",   PF_ARM_V83_LRCPC_INSTRUCTIONS_AVAILABLE },
++            { "hw.optional.arm.FEAT_LSE2",    PF_ARM_LSE2_AVAILABLE },
++        };
++        unsigned int i;
++
++        features[PF_ARM_NEON_INSTRUCTIONS_AVAILABLE] = TRUE;
++        for (i = 0; i < ARRAY_SIZE(sysctl_features); i++)
++        {
++            int value = 0;
++            size_t len = sizeof(value);
++            if (!sysctlbyname( sysctl_features[i].name, &value, &len, NULL, 0 ) && value)
++                features[sysctl_features[i].feature] = TRUE;
++        }
++    }
+ #endif
+ 
+     features[PF_FASTFAIL_AVAILABLE]      = TRUE;
+diff -ruN orig-port/dlls/ntdll/unix/virtual.c src-port/dlls/ntdll/unix/virtual.c
+--- orig-port/dlls/ntdll/unix/virtual.c	2026-10-18 00:48:53
++++ src-port/dlls/ntdll/unix/virtual.c	2026-10-10 11:06:41
+@@ -206,6 +206,39 @@
+ static struct file_view *arm64ec_view;
+ 
+ ULONG_PTR user_space_wow_limit = 0;
++
++#if defined(__APPLE__) && defined(__aarch64__)
++/* wine-macos-native: macOS arm64 cannot map anything below 4GB, so the 32-bit
++ * address space of WoW64 processes lives in a 4GB window at WOW64_GUEST_BASE.
++ * The base is 4GB aligned, so truncating a host pointer in the window to 32 bits
++ * yields the guest address. Must match FEXCore::GuestMemoryBase. */
++#define WOW64_GUEST_BASE ((ULONG_PTR)0x10000000000)
++#define WOW64_GUEST_SIZE ((ULONG_PTR)0x100000000)
++static BOOL wow64_window_reserved;
++
++static inline BOOL wow64_window_active(void)
++{
++    return wow64_window_reserved && is_wow64();
++}
++
++/* move a sub-4GB address or limit of a WoW64 process into the window */
++static inline void wow64_window_adjust( void **base, ULONG_PTR *limit_low, ULONG_PTR *limit_high )
++{
++    if (!wow64_window_reserved) return;
++    /* nothing below 4GB can be mapped on macOS, so fixed low addresses always go to the window
++     * (the main exe is mapped before the process is flagged as WoW64) */
++    if (*base && (ULONG_PTR)*base < WOW64_GUEST_SIZE) *base = (char *)*base + WOW64_GUEST_BASE;
++    if (!is_wow64()) return;
++    if (*limit_high && *limit_high < WOW64_GUEST_SIZE)
++    {
++        *limit_low = WOW64_GUEST_BASE + max( *limit_low, 0x10000 );
++        *limit_high += WOW64_GUEST_BASE;
++    }
++}
++#else
++static inline BOOL wow64_window_active(void) { return FALSE; }
++static inline void wow64_window_adjust( void **base, ULONG_PTR *limit_low, ULONG_PTR *limit_high ) { }
++#endif
+ /* arm64 macOS: KUSER_SHARED_DATA cannot live at 0x7ffe0000 (the kernel forces a
+  * 4GB __PAGEZERO); it is mapped at 0x17ffe0000 instead.  i386/x86_64 processes
+  * (Rosetta hybrid slice) can and must use the standard Windows address. */
+@@ -2307,6 +2340,7 @@
+         return STATUS_SUCCESS;
+     }
+ 
++    wow64_window_adjust( &base, &limit_low, &limit_high );
+     if (limit_high && limit_low >= limit_high) return STATUS_INVALID_PARAMETER;
+ 
+     if (use_kernel_writewatch && vprot & VPROT_WRITEWATCH)
+@@ -3741,6 +3775,23 @@
+ 
+     mmap_init( preload_info ? *preload_info : NULL );
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++    {
++        void *window = mmap( (void *)WOW64_GUEST_BASE, WOW64_GUEST_SIZE, PROT_NONE,
++                             MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0 );
++        if (window == (void *)WOW64_GUEST_BASE)
++        {
++            mmap_add_reserved_area( window, WOW64_GUEST_SIZE );
++            wow64_window_reserved = TRUE;
++        }
++        else
++        {
++            if (window != MAP_FAILED) munmap( window, WOW64_GUEST_SIZE );
++            WARN( "could not reserve the WoW64 address window\n" );
++        }
++    }
++#endif
++
+     if ((preload = getenv("WINEPRELOADRESERVE")))
+     {
+         unsigned long start, end;
+@@ -4003,6 +4054,10 @@
+ 
+ 
+     if (!(delta = (ULONG_PTR)module - image_base)) return STATUS_SUCCESS;
++    /* 32-bit images in the WoW64 window: compare guest (32-bit) addresses */
++    if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC && wow64_window_active() &&
++        !(delta = (LONG)((ULONG)(ULONG_PTR)module - (ULONG)image_base)))
++        return STATUS_SUCCESS;
+ 
+     if (nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED)
+     {
+@@ -4523,7 +4578,18 @@
+     {
+         ERR( "failed to remap the process USD: %d\n", res );
+         exit(1);
++    }
++#if defined(__APPLE__) && defined(__aarch64__)
++    if (wow64_window_active())
++    {
++        /* 32-bit code reads KUSER_SHARED_DATA at its fixed guest address 0x7ffe0000 */
++        void *guest_usd = (void *)(WOW64_GUEST_BASE + 0x7ffe0000);
++        SIZE_T size = page_size;
++        if (NtAllocateVirtualMemory( NtCurrentProcess(), &guest_usd, 0, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READONLY ) ||
++            guest_usd != mmap( guest_usd, page_size, PROT_READ, MAP_SHARED | MAP_FIXED, fd, 0 ))
++            ERR( "failed to map the WoW64 USD at %p\n", guest_usd );
+     }
++#endif
+     if (needs_close) close( fd );
+     NtClose( section );
+ }
+diff -ruN orig-port/dlls/win32u/message.c src-port/dlls/win32u/message.c
+--- orig-port/dlls/win32u/message.c	2026-10-18 00:48:53
++++ src-port/dlls/win32u/message.c	2026-10-10 10:15:18
+@@ -48,7 +48,7 @@
+ /* arm64 macOS: KUSER_SHARED_DATA cannot live at 0x7ffe0000 (the kernel forces a
+  * 4GB __PAGEZERO); it is mapped at 0x17ffe0000 instead.  i386/x86_64 processes
+  * (Rosetta hybrid slice) can and must use the standard Windows address. */
+-#ifdef __aarch64__
++#if defined(__aarch64__) || defined(__arm64ec__)
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x17ffe0000;
+ #else
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
+diff -ruN orig-port/dlls/wow64/Makefile.in src-port/dlls/wow64/Makefile.in
+--- orig-port/dlls/wow64/Makefile.in	2026-10-18 00:48:54
++++ src-port/dlls/wow64/Makefile.in	2026-10-10 10:34:53
+@@ -3,6 +3,7 @@
+ IMPORTS   = ntdll
+ 
+ EXTRADLLFLAGS = -nodefaultlibs
++EXTRADEFS = -DWINE_WOW64_GUEST_BASE
+ 
+ SOURCES = \
+ 	file.c \
+diff -ruN orig-port/dlls/wow64win/Makefile.in src-port/dlls/wow64win/Makefile.in
+--- orig-port/dlls/wow64win/Makefile.in	2026-10-18 00:48:54
++++ src-port/dlls/wow64win/Makefile.in	2026-10-10 10:34:59
+@@ -2,6 +2,7 @@
+ IMPORTS   = wow64 win32u ntdll
+ 
+ EXTRADLLFLAGS = -nodefaultlibs
++EXTRADEFS = -DWINE_WOW64_GUEST_BASE
+ 
+ SOURCES = \
+ 	gdi.c \
+diff -ruN orig-port/dlls/wow64win/user.c src-port/dlls/wow64win/user.c
+--- orig-port/dlls/wow64win/user.c	2026-10-18 00:48:54
++++ src-port/dlls/wow64win/user.c	2026-10-10 10:34:59
+@@ -4044,7 +4044,7 @@
+         devices64[i].usUsagePage = devices32[i].usUsagePage;
+         devices64[i].usUsage = devices32[i].usUsage;
+         devices64[i].dwFlags = devices32[i].dwFlags;
+-        devices64[i].hwndTarget = UlongToPtr( devices32[i].hwndTarget );
++        devices64[i].hwndTarget = UlongToHandle( devices32[i].hwndTarget );
+     }
+ 
+     return NtUserRegisterRawInputDevices( devices64, count, sizeof(*devices64) );
+diff -ruN orig-port/include/basetsd.h src-port/include/basetsd.h
+--- orig-port/include/basetsd.h	2026-10-18 00:48:54
++++ src-port/include/basetsd.h	2026-10-10 11:14:15
+@@ -249,6 +249,11 @@
+ 
+ static inline void *ULongToPtr(ULONG32 ul)
+ {
++#ifdef WINE_WOW64_GUEST_BASE
++    /* wine-macos-native: 32-bit guest addresses live at a 4GB-aligned host base.
++     * Values below 0x10000 (resource ids, atoms, small integers) are not addresses. */
++    if (ul >= 0x10000) return (void *)((ULONG_PTR)0x10000000000 + ul);
++#endif
+     return (void *)(ULONG_PTR)ul;
+ }
+ 
+@@ -280,7 +285,18 @@
+ #define IntToPtr(i)             ((void *)(INT_PTR)((INT)i))
+ #define UIntToPtr(ui)           ((void *)(UINT_PTR)((UINT)ui))
+ #define LongToPtr(l)            ((void *)(LONG_PTR)((LONG)l))
++#if defined(WINE_WOW64_GUEST_BASE) && defined(_WIN64)
++/* wine-macos-native: 32-bit guest addresses live at a 4GB-aligned host base.
++ * Values below 0x10000 (resource ids, atoms, small integers) are not addresses. */
++#define __WINE_WOW64_GUEST_BASE ((ULONG_PTR)0x10000000000)
++static inline void *__wine_wow64_guest_ptr( ULONG ul )
++{
++    return ul < 0x10000 ? (void *)(ULONG_PTR)ul : (void *)(__WINE_WOW64_GUEST_BASE + ul);
++}
++#define ULongToPtr(ul)          __wine_wow64_guest_ptr( (ULONG)(ul) )
++#else
+ #define ULongToPtr(ul)          ((void *)(ULONG_PTR)((ULONG)ul))
++#endif
+ 
+ #endif /* defined(_WIN64) || defined(_WIN32) */
+ 
+diff -ruN orig-port/include/winnt.h src-port/include/winnt.h
+--- orig-port/include/winnt.h	2026-10-18 00:48:54
++++ src-port/include/winnt.h	2026-10-10 10:15:18
+@@ -2596,6 +2596,23 @@
+ {
+     return (struct _TEB *)__readfsdword( 0x18 );
+ }
++#elif (defined(__aarch64__) || defined(__arm64ec__)) && defined(__WINE_PE_BUILD) && (defined(__GNUC__) || defined(__clang__))
++/* macOS ARM64 port: the kernel zeroes x18 on every return to user mode
++ * (interrupts, page faults, signals), so the TEB cannot be kept in x18.
++ * The unix side stores it in a fixed pthread TSD slot instead, which is
++ * addressed from TPIDRRO_EL0 (low 3 bits hold the CPU number). */
++#define WINE_MACOS_TEB_TSD_KEY 700
++#define __WINE_TEB_TSD_STR2(x) #x
++#define __WINE_TEB_TSD_STR(x) __WINE_TEB_TSD_STR2(x)
++static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
++{
++    struct _TEB *teb;
++    __asm__( "mrs %0, tpidrro_el0\n\t"
++             "and %0, %0, #0xfffffffffffffff8\n\t"
++             "ldr %0, [%0, #(8 * " __WINE_TEB_TSD_STR(WINE_MACOS_TEB_TSD_KEY) ")]"
++             : "=r" (teb) );
++    return teb;
++}
+ #elif (defined(__aarch64__) || defined(__arm64ec__)) && defined(__GNUC__)
+ register struct _TEB *__wine_current_teb __asm__("x18");
+ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
+diff -ruN orig-port/server/registry.c src-port/server/registry.c
+--- orig-port/server/registry.c	2026-10-18 00:48:54
++++ src-port/server/registry.c	2026-10-10 10:35:29
+@@ -1892,6 +1892,16 @@
+             supported_machines[count++] = IMAGE_FILE_MACHINE_I386;
+             supported_machines[count++] = IMAGE_FILE_MACHINE_AMD64;
+             hybrid_host_machine = IMAGE_FILE_MACHINE_AMD64;
++        }
++        /* With an in-process ARM64EC emulator (e.g. FEX's libarm64ecfex.dll set
++         * as HKLM\Software\Microsoft\Wow64\amd64), x86_64 code can run natively
++         * hosted.  i386 stays unsupported: macOS keeps the low 4GB unmappable. */
++        else
++        {
++            /* wine-macos-native: in-process emulators (FEX). i386 runs in the WoW64
++             * address window above 4GB (see WOW64_GUEST_BASE in ntdll). */
++            if (getenv( "WINEWOW64EMU" )) supported_machines[count++] = IMAGE_FILE_MACHINE_I386;
++            if (getenv( "WINEARM64ECEMU" )) supported_machines[count++] = IMAGE_FILE_MACHINE_AMD64;
+         }
+ #else
+         supported_machines[count++] = IMAGE_FILE_MACHINE_I386;

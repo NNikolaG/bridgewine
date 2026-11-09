@@ -1,0 +1,101 @@
+name: Wine arm64
+
+# Gradi nas native arm64 Wine (bez Rosette) za `bw runtime install-arm64`:
+# citi94/wine-macos-arm64 (Wine 11.10 + macOS arm64 port, LGPL) + patches/arm64-wine-11.10
+# (TEB u TSD slotu, ARM64EC; iz Irz-Z/wine-macos-native). Za razliku od gotovog
+# Irz-Z build-a ovaj ima Vulkan (MoltenVK), pa DXVK radi i pod FEX-om.
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths:
+      - patches/arm64-wine-11.10/**
+      - .github/workflows/wine-arm64.yml
+  workflow_dispatch:
+
+concurrency:
+  group: wine-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  WINE_REPO: citi94/wine-macos-arm64
+  WINE_SHA: 0cc8848b607572cfeacf3e550ef696bd63a43955
+  LLVM_MINGW: llvm-mingw-20260922-ucrt-macos-universal
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag release-a
+        id: tag
+        run: |
+          test "$(uname -m)" = arm64
+          h=$(cat patches/arm64-wine-11.10/*.patch patches/fex-2609/llvm-mingw-0001-ntcurrentteb-tsd.patch .github/workflows/wine-arm64.yml | shasum -a 256 | cut -c1-12)
+          echo "tag=wine-arm64-11.10-bw-$h" >> "$GITHUB_OUTPUT"
+
+      - name: Vec postoji?
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Izvorni kod i alati
+        if: steps.exists.outputs.yes != 'true'
+        run: |
+          brew install bison flex freetype gnutls molten-vk
+          curl -fsSL -o lm.tar.xz "https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/$LLVM_MINGW.tar.xz"
+          tar -xJf lm.tar.xz
+          (cd "$LLVM_MINGW" && sed "s#$LLVM_MINGW/##g" "$GITHUB_WORKSPACE/patches/fex-2609/llvm-mingw-0001-ntcurrentteb-tsd.patch" | patch -p0)
+          curl -fsSL -o wine.tar.gz "https://github.com/$WINE_REPO/archive/$WINE_SHA.tar.gz"
+          mkdir wine && tar -xzf wine.tar.gz -C wine --strip-components 1
+          cd wine
+          for p in "$GITHUB_WORKSPACE"/patches/arm64-wine-11.10/*.patch; do echo "== $p"; patch -p1 < "$p"; done
+
+      - name: Build
+        if: steps.exists.outputs.yes != 'true'
+        run: |
+          B=$(brew --prefix)
+          export PATH="$B/opt/bison/bin:$B/opt/flex/bin:$GITHUB_WORKSPACE/$LLVM_MINGW/bin:$PATH"
+          mkdir build && cd build
+          ../wine/configure --prefix=/ --enable-archs=aarch64,arm64ec ac_cv_func_pipe2=no \
+            LDFLAGS="-L$B/lib" CPPFLAGS="-I$B/include" \
+            --without-x --without-gstreamer --without-sdl --without-cups --without-sane \
+            --without-gphoto --without-krb5 --without-pcap --without-usb --without-v4l2 \
+            --without-capi --without-pulse --without-alsa --without-oss --without-dbus \
+            --without-udev --without-ffmpeg --disable-tests
+          grep -E 'SONAME_LIB(VULKAN|FREETYPE|GNUTLS)' include/config.h
+          grep -q SONAME_LIBVULKAN include/config.h
+          make -j"$(sysctl -n hw.ncpu)" >make.log 2>&1 || { tail -80 make.log; exit 1; }
+          make install DESTDIR="$GITHUB_WORKSPACE/dist/wine-arm64-bw" >/dev/null
+          # MoltenVK ide uz runtime; freetype/gnutls bw trazi u Homebrew-u.
+          cp -L "$B/lib/libMoltenVK.dylib" "$GITHUB_WORKSPACE/dist/wine-arm64-bw/lib/"
+          cd "$GITHUB_WORKSPACE/dist"
+          file wine-arm64-bw/bin/wine
+          tar -czf wine-arm64-bw.tar.gz wine-arm64-bw
+          shasum -a 256 wine-arm64-bw.tar.gz | tee wine-arm64-bw.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: steps.exists.outputs.yes != 'true'
+        with:
+          name: ${{ steps.tag.outputs.tag }}
+          path: dist/wine-arm64-bw.tar.gz*
+          if-no-files-found: error
+
+      - name: Release
+        if: steps.exists.outputs.yes != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" dist/wine-arm64-bw.tar.gz dist/wine-arm64-bw.tar.gz.sha256 \
+            --target "${{ github.sha }}" \
+            --title "Wine arm64 + BridgeWine patch-evi (${{ steps.tag.outputs.tag }})" \
+            --notes "Wine 11.10 arm64 (LGPL-2.1+): https://github.com/$WINE_REPO/tree/$WINE_SHA + patches/arm64-wine-11.10. Vulkan preko MoltenVK-a (Apache-2.0)." \
+            --prerelease
